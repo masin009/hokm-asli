@@ -35,6 +35,7 @@ if not TOKEN:
 
 # کانال اجباری (ربات باید ادمین این کانال باشه)
 REQUIRED_CHANNEL = "@konkorkhabar"
+CHANNEL_ID = -1001234567890  # باید آی‌دی عددی کانالت رو اینجا بذاری
 
 print(f"✅ توکن خوانده شد")
 print(f"📢 کانال اجباری: {REQUIRED_CHANNEL}")
@@ -44,6 +45,59 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+
+# ==================== تابع چک عضویت درست ====================
+
+async def check_channel_membership(context: CallbackContext, user_id: int) -> bool:
+    """بررسی عضویت کاربر در کانال - روش درست"""
+    try:
+        # روش ۱: استفاده از getChatMember (ربات باید ادمین باشه)
+        try:
+            chat_member = await context.bot.get_chat_member(
+                chat_id=REQUIRED_CHANNEL,  # یا CHANNEL_ID
+                user_id=user_id
+            )
+            logger.info(f"وضعیت کاربر {user_id}: {chat_member.status}")
+            return chat_member.status in ['member', 'administrator', 'creator']
+        except Exception as e:
+            logger.error(f"خطا در getChatMember برای کاربر {user_id}: {e}")
+            
+            # روش ۲: اگر ربات ادمین نیست، از کاربر بخواه جوین لینک رو بفرسته
+            return await check_membership_by_invite(context, user_id)
+            
+    except Exception as e:
+        logger.error(f"خطا کلی در بررسی عضویت کاربر {user_id}: {e}")
+        return False
+
+async def check_membership_by_invite(context: CallbackContext, user_id: int) -> bool:
+    """روش جایگزین برای چک عضویت"""
+    try:
+        # ارسال پیام به کاربر برای جوین شدن
+        keyboard = [
+            [InlineKeyboardButton("📢 جوین شو در کانال", url=f"https://t.me/{REQUIRED_CHANNEL[1:]}")],
+            [InlineKeyboardButton("✅ تایید عضویت", callback_data=f"verify_{user_id}")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await context.bot.send_message(
+            chat_id=user_id,
+            text=f"برای بازی باید عضو کانال {REQUIRED_CHANNEL} باشید.\n\n"
+                 f"۱. روی دکمه 'جوین شو' کلیک کنید\n"
+                 f"۲. در کانال عضو شوید\n"
+                 f"۳. روی 'تایید عضویت' کلیک کنید\n\n"
+                 f"⚠️ توجه: باید در کانال عضو باشید تا بتوانید بازی کنید.",
+            reply_markup=reply_markup
+        )
+        
+        # ذخیره در حافظه که کاربر در حال بررسی است
+        user_verification_status[user_id] = "pending"
+        return False
+    except Exception as e:
+        logger.error(f"خطا در ارسال پیام به کاربر {user_id}: {e}")
+        return False
+
+# ذخیره وضعیت تایید کاربران
+user_verification_status = {}
 
 # ==================== کلاس‌های بازی ====================
 
@@ -112,6 +166,7 @@ class Player:
         self.score: int = 0
         self.is_ready: bool = False
         self.is_channel_member: bool = False
+        self.verified_manually: bool = False  # کاربر به صورت دستی تایید کرده
     
     @property
     def display_name(self):
@@ -183,7 +238,7 @@ class Game:
             return False
         
         # بررسی عضویت همه در کانال
-        if not all(player.is_channel_member for player in self.players):
+        if not all(player.is_channel_member or player.verified_manually for player in self.players):
             return False
         
         self.initialize_deck()
@@ -338,8 +393,13 @@ class Game:
             text += f"⏳ در انتظار بازیکنان ({len(self.players)}/4)\n\n"
             text += "👥 بازیکنان:\n"
             for i, player in enumerate(self.players, 1):
-                member_status = "✅" if player.is_channel_member else "❌"
-                text += f"{i}. {player.display_name} {member_status}\n"
+                if player.verified_manually:
+                    status = "✅ (تایید دستی)"
+                elif player.is_channel_member:
+                    status = "✅"
+                else:
+                    status = "❌"
+                text += f"{i}. {player.display_name} {status}\n"
             text += f"\n📢 برای بازی باید عضو کانال {REQUIRED_CHANNEL} باشید.\n"
             text += f"🎮 سازنده بازی: {self.get_player(self.creator_id).display_name if self.get_player(self.creator_id) else '?'}"
         
@@ -347,8 +407,13 @@ class Game:
             text += "🔍 بررسی عضویت در کانال...\n\n"
             text += "👥 وضعیت بازیکنان:\n"
             for player in self.players:
-                member_status = "✅ عضو است" if player.is_channel_member else "❌ عضو نیست"
-                text += f"• {player.display_name}: {member_status}\n"
+                if player.verified_manually:
+                    status = "✅ تایید دستی"
+                elif player.is_channel_member:
+                    status = "✅ عضو است"
+                else:
+                    status = "❌ عضو نیست"
+                text += f"• {player.display_name}: {status}\n"
             text += f"\n🎮 سازنده بازی: {self.get_player(self.creator_id).display_name}"
         
         elif self.state == "choosing_trump":
@@ -428,20 +493,6 @@ game_manager = GameManager()
 
 # ==================== توابع کمکی ====================
 
-async def check_channel_membership(context: CallbackContext, user_id: int) -> bool:
-    """بررسی عضویت کاربر در کانال - ربات باید ادمین کانال باشد"""
-    try:
-        chat_member = await context.bot.get_chat_member(
-            chat_id=REQUIRED_CHANNEL, 
-            user_id=user_id
-        )
-        # وضعیت‌های مجاز
-        allowed_statuses = ['member', 'administrator', 'creator']
-        return chat_member.status in allowed_statuses
-    except Exception as e:
-        logger.error(f"خطا در بررسی عضویت کاربر {user_id}: {e}")
-        return False
-
 def create_cards_keyboard(player: Player, game: Game) -> InlineKeyboardMarkup:
     """ایجاد کیبورد شیشه‌ای برای کارت‌های بازیکن"""
     # گروه‌بندی کارت‌ها بر اساس خال
@@ -481,8 +532,9 @@ def start_command(update: Update, context: CallbackContext):
         "📋 دستورات:\n"
         "/newgame - ایجاد بازی جدید\n"
         "/join - پیوستن به بازی\n"
-        "/startgame - شروع بازی\n"
-        "/stop - توقف بازی\n"
+        "/startgame - شروع بازی (فقط سازنده)\n"
+        "/verify - تایید عضویت در کانال\n"
+        "/stop - توقف بازی (فقط سازنده)\n"
         "/leave - ترک بازی\n"
         "/status - وضعیت بازی\n"
         "/rules - قوانین بازی\n\n"
@@ -501,45 +553,30 @@ def new_game_command(update: Update, context: CallbackContext):
     
     user = update.effective_user
     
-    # بررسی عضویت سازنده در کانال
-    async def check_and_create():
-        is_member = await check_channel_membership(context, user.id)
-        if not is_member:
-            update.message.reply_text(
-                f"❌ شما عضو کانال {REQUIRED_CHANNEL} نیستید!\n"
-                f"لطفا ابتدا به کانال جوین شوید و سپس بازی ایجاد کنید.\n"
-                f"کانال: {REQUIRED_CHANNEL}"
-            )
-            return
-        
-        # ایجاد بازی جدید
-        player = Player(user.id, user.username, user.first_name)
-        player.is_channel_member = True
-        game = game_manager.create_game(chat_id, player)
-        
-        keyboard = [
-            [InlineKeyboardButton("🎮 پیوستن به بازی", callback_data=f"join_{game.game_id}")],
-            [InlineKeyboardButton("✅ بررسی عضویت", callback_data=f"check_{game.game_id}")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        message = update.message.reply_text(
-            game.get_game_info_text(),
-            reply_markup=reply_markup
-        )
-        
-        game.message_id = message.message_id
-        
-        update.message.reply_text(
-            f"✅ بازی جدید ایجاد شد!\n"
-            f"🎮 شما سازنده بازی هستید.\n"
-            f"برای شروع بازی بعد از تکمیل بازیکنان از /startgame استفاده کنید."
-        )
+    # ایجاد بازی جدید (بدون چک عضویت برای سازنده)
+    player = Player(user.id, user.username, user.first_name)
+    player.verified_manually = True  # سازنده به صورت دستی تایید می‌شود
+    game = game_manager.create_game(chat_id, player)
     
-    # اجرای غیرهمزمان
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(check_and_create())
+    keyboard = [
+        [InlineKeyboardButton("🎮 پیوستن به بازی", callback_data=f"join_{game.game_id}")],
+        [InlineKeyboardButton("✅ بررسی/تایید عضویت", callback_data=f"check_{game.game_id}")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    message = update.message.reply_text(
+        game.get_game_info_text(),
+        reply_markup=reply_markup
+    )
+    
+    game.message_id = message.message_id
+    
+    update.message.reply_text(
+        f"✅ بازی جدید ایجاد شد!\n"
+        f"🎮 شما سازنده بازی هستید.\n"
+        f"برای شروع بازی بعد از تکمیل بازیکنان از /startgame استفاده کنید.\n\n"
+        f"📢 بازیکنان باید عضو کانال {REQUIRED_CHANNEL} باشند یا با /verify تایید شوند."
+    )
 
 def join_command(update: Update, context: CallbackContext):
     """پیوستن به بازی"""
@@ -565,52 +602,60 @@ def join_command(update: Update, context: CallbackContext):
         update.message.reply_text("❌ بازی تکمیل است!")
         return
     
-    # بررسی عضویت در کانال
-    async def check_and_join():
-        is_member = await check_channel_membership(context, user.id)
-        
-        if not is_member:
-            update.message.reply_text(
-                f"❌ شما عضو کانال {REQUIRED_CHANNEL} نیستید!\n"
-                f"لطفا ابتدا به کانال زیر جوین شوید:\n"
-                f"{REQUIRED_CHANNEL}\n\n"
-                f"سپس دوباره امتحان کنید."
-            )
-            return
-        
-        player = Player(user.id, user.username, user.first_name)
-        player.is_channel_member = is_member
-        
-        if game.add_player(player):
-            game_manager.user_games[user.id] = game.game_id
-            
-            keyboard = [
-                [InlineKeyboardButton("🎮 پیوستن به بازی", callback_data=f"join_{game.game_id}")],
-                [InlineKeyboardButton("✅ بررسی عضویت", callback_data=f"check_{game.game_id}")]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            
-            try:
-                context.bot.edit_message_text(
-                    chat_id=chat_id,
-                    message_id=game.message_id,
-                    text=game.get_game_info_text(),
-                    reply_markup=reply_markup
-                )
-            except:
-                pass
-            
-            update.message.reply_text(
-                f"✅ {user.first_name} به بازی پیوست!\n"
-                f"📢 منتظر بازیکنان دیگر باشید.\n"
-                f"🎮 سازنده بازی باید بازی را شروع کند: /startgame"
-            )
-        else:
-            update.message.reply_text("❌ خطا در پیوستن به بازی!")
+    player = Player(user.id, user.username, user.first_name)
+    player.is_channel_member = False  # ابتدا false قرار می‌دهیم
     
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(check_and_join())
+    if game.add_player(player):
+        game_manager.user_games[user.id] = game.game_id
+        
+        keyboard = [
+            [InlineKeyboardButton("🎮 پیوستن به بازی", callback_data=f"join_{game.game_id}")],
+            [InlineKeyboardButton("✅ بررسی/تایید عضویت", callback_data=f"check_{game.game_id}")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        try:
+            context.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=game.message_id,
+                text=game.get_game_info_text(),
+                reply_markup=reply_markup
+            )
+        except:
+            pass
+        
+        update.message.reply_text(
+            f"✅ {user.first_name} به بازی پیوست!\n\n"
+            f"📢 برای بازی کردن باید:\n"
+            f"۱. عضو کانال {REQUIRED_CHANNEL} باشید\n"
+            f"۲. یا از دستور /verify استفاده کنید\n\n"
+            f"🎮 سازنده بازی باید بازی را شروع کند: /startgame"
+        )
+    else:
+        update.message.reply_text("❌ خطا در پیوستن به بازی!")
+
+def verify_command(update: Update, context: CallbackContext):
+    """تایید دستی عضویت در کانال"""
+    user = update.effective_user
+    
+    update.message.reply_text(
+        f"🔍 تایید عضویت در کانال\n\n"
+        f"کانال اجباری: {REQUIRED_CHANNEL}\n\n"
+        f"اگر در کانال عضو هستید، یکی از گزینه‌های زیر را انتخاب کنید:\n\n"
+        f"۱. اگر مطمئن هستید که عضو هستید، روی 'تایید عضویت من' کلیک کنید\n"
+        f"۲. برای جوین شدن در کانال، روی 'جوین شو' کلیک کنید"
+    )
+    
+    keyboard = [
+        [InlineKeyboardButton("📢 جوین شو در کانال", url=f"https://t.me/{REQUIRED_CHANNEL[1:]}")],
+        [InlineKeyboardButton("✅ تایید عضویت من", callback_data=f"manual_verify_{user.id}")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    update.message.reply_text(
+        "لطفا یکی از گزینه‌های زیر را انتخاب کنید:",
+        reply_markup=reply_markup
+    )
 
 def startgame_command(update: Update, context: CallbackContext):
     """شروع بازی - فقط سازنده"""
@@ -636,101 +681,92 @@ def startgame_command(update: Update, context: CallbackContext):
         update.message.reply_text(f"❌ فقط {len(game.players)}/4 بازیکن وجود دارد! باید ۴ نفر کامل باشند.")
         return
     
-    # بررسی عضویت همه بازیکنان
-    async def check_all_and_start():
-        all_members = True
-        non_members = []
-        
-        for player in game.players:
-            player.is_channel_member = await check_channel_membership(context, player.user_id)
-            if not player.is_channel_member:
-                all_members = False
-                non_members.append(player.display_name)
-        
-        if not all_members:
-            game.state = "checking_members"
-            
-            keyboard = [
-                [InlineKeyboardButton("🔄 بررسی مجدد عضویت", callback_data=f"check_{game.game_id}")]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            
-            try:
-                context.bot.edit_message_text(
-                    chat_id=chat_id,
-                    message_id=game.message_id,
-                    text=game.get_game_info_text(),
-                    reply_markup=reply_markup
-                )
-            except:
-                pass
-            
-            non_members_list = "\n".join([f"• {name}" for name in non_members])
-            update.message.reply_text(
-                f"⚠️ برخی بازیکنان عضو کانال {REQUIRED_CHANNEL} نیستند!\n\n"
-                f"بازیکنان زیر باید به کانال جوین شوند:\n"
-                f"{non_members_list}\n\n"
-                f"کانال: {REQUIRED_CHANNEL}\n\n"
-                f"پس از جوین شدن، دوباره /startgame را بزنید."
-            )
-            return
-        
-        # شروع بازی
-        if game.start_game():
-            # نمایش پیام انتخاب خال حکم
-            chooser = game.get_player(game.trump_chooser_id)
-            
-            keyboard = [
-                [
-                    InlineKeyboardButton("♥️ دل", callback_data=f"trump_{game.game_id}_hearts"),
-                    InlineKeyboardButton("♦️ خشت", callback_data=f"trump_{game.game_id}_diamonds")
-                ],
-                [
-                    InlineKeyboardButton("♣️ پیک", callback_data=f"trump_{game.game_id}_clubs"),
-                    InlineKeyboardButton("♠️ گیشنیز", callback_data=f"trump_{game.game_id}_spades")
-                ]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            
-            try:
-                context.bot.edit_message_text(
-                    chat_id=chat_id,
-                    message_id=game.message_id,
-                    text=game.get_game_info_text(),
-                    reply_markup=reply_markup
-                )
-            except:
-                pass
-            
-            # ارسال کارت‌ها به بازیکن انتخاب کننده خال حکم
-            if chooser:
-                try:
-                    cards_keyboard = create_cards_keyboard(chooser, game)
-                    message = context.bot.send_message(
-                        chat_id=chooser.user_id,
-                        text=f"🎴 کارت‌های شما:\n\n"
-                             f"🃏 شما باید خال حکم را انتخاب کنید.\n"
-                             f"خال حکم: (هنوز انتخاب نشده)\n\n"
-                             f"کارت‌های خود را برای آماده شدن بررسی کنید.",
-                        reply_markup=cards_keyboard
-                    )
-                    game.player_cards_messages[chooser.user_id] = message.message_id
-                except:
-                    context.bot.send_message(
-                        chat_id=chat_id,
-                        text=f"⚠️ {chooser.display_name}، لطفا به ربات پیام خصوصی بدهید: @{context.bot.username}"
-                    )
-            
-            update.message.reply_text(
-                f"✅ بازی شروع شد!\n"
-                f"🎮 اولین بازیکن ({chooser.display_name if chooser else '?'}) باید خال حکم را انتخاب کند."
-            )
-        else:
-            update.message.reply_text("❌ خطا در شروع بازی!")
+    # بررسی وضعیت بازیکنان
+    ready_players = [p for p in game.players if p.is_channel_member or p.verified_manually]
+    not_ready_players = [p for p in game.players if not p.is_channel_member and not p.verified_manually]
     
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(check_all_and_start())
+    if len(ready_players) < 4:
+        game.state = "checking_members"
+        
+        keyboard = [
+            [InlineKeyboardButton("✅ بررسی/تایید عضویت", callback_data=f"check_{game.game_id}")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        try:
+            context.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=game.message_id,
+                text=game.get_game_info_text(),
+                reply_markup=reply_markup
+            )
+        except:
+            pass
+        
+        not_ready_list = "\n".join([f"• {p.display_name}" for p in not_ready_players])
+        update.message.reply_text(
+            f"⚠️ برخی بازیکنان آماده نیستند!\n\n"
+            f"بازیکنان زیر باید عضویت خود را تایید کنند:\n"
+            f"{not_ready_list}\n\n"
+            f"راه‌های تایید:\n"
+            f"۱. عضو کانال {REQUIRED_CHANNEL} شوند\n"
+            f"۲. از دستور /verify استفاده کنند\n\n"
+            f"پس از تایید همه، دوباره /startgame را بزنید."
+        )
+        return
+    
+    # شروع بازی
+    if game.start_game():
+        # نمایش پیام انتخاب خال حکم
+        chooser = game.get_player(game.trump_chooser_id)
+        
+        keyboard = [
+            [
+                InlineKeyboardButton("♥️ دل", callback_data=f"trump_{game.game_id}_hearts"),
+                InlineKeyboardButton("♦️ خشت", callback_data=f"trump_{game.game_id}_diamonds")
+            ],
+            [
+                InlineKeyboardButton("♣️ پیک", callback_data=f"trump_{game.game_id}_clubs"),
+                InlineKeyboardButton("♠️ گیشنیز", callback_data=f"trump_{game.game_id}_spades")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        try:
+            context.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=game.message_id,
+                text=game.get_game_info_text(),
+                reply_markup=reply_markup
+            )
+        except:
+            pass
+        
+        # ارسال کارت‌ها به بازیکن انتخاب کننده خال حکم
+        if chooser:
+            try:
+                cards_keyboard = create_cards_keyboard(chooser, game)
+                message = context.bot.send_message(
+                    chat_id=chooser.user_id,
+                    text=f"🎴 کارت‌های شما:\n\n"
+                         f"🃏 شما باید خال حکم را انتخاب کنید.\n"
+                         f"خال حکم: (هنوز انتخاب نشده)\n\n"
+                         f"کارت‌های خود را برای آماده شدن بررسی کنید.",
+                    reply_markup=cards_keyboard
+                )
+                game.player_cards_messages[chooser.user_id] = message.message_id
+            except:
+                context.bot.send_message(
+                    chat_id=chat_id,
+                    text=f"⚠️ {chooser.display_name}، لطفا به ربات پیام خصوصی بدهید: @{context.bot.username}"
+                )
+        
+        update.message.reply_text(
+            f"✅ بازی شروع شد!\n"
+            f"🎮 اولین بازیکن ({chooser.display_name if chooser else '?'}) باید خال حکم را انتخاب کند."
+        )
+    else:
+        update.message.reply_text("❌ خطا در شروع بازی!")
 
 def stop_command(update: Update, context: CallbackContext):
     """توقف بازی - فقط سازنده"""
@@ -777,7 +813,7 @@ def leave_command(update: Update, context: CallbackContext):
         # آپدیت پیام بازی
         keyboard = [
             [InlineKeyboardButton("🎮 پیوستن به بازی", callback_data=f"join_{game.game_id}")],
-            [InlineKeyboardButton("✅ بررسی عضویت", callback_data=f"check_{game.game_id}")]
+            [InlineKeyboardButton("✅ بررسی/تایید عضویت", callback_data=f"check_{game.game_id}")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
@@ -833,7 +869,7 @@ def rules_command(update: Update, context: CallbackContext):
         "⚙️ مدیریت بازی:\n"
         "• فقط سازنده بازی می‌تواند بازی را شروع کند (/startgame)\n"
         "• فقط سازنده بازی می‌تواند بازی را متوقف کند (/stop)\n"
-        f"• برای بازی باید عضو کانال {REQUIRED_CHANNEL} باشید"
+        f"• برای بازی باید عضو کانال {REQUIRED_CHANNEL} باشید یا با /verify تایید شوید"
     )
     
     update.message.reply_text(rules_text)
@@ -866,34 +902,22 @@ def callback_handler(update: Update, context: CallbackContext):
             query.answer("بازی تکمیل است!", show_alert=True)
             return
         
-        # بررسی عضویت در کانال
-        async def check_and_join_async():
-            is_member = await check_channel_membership(context, user.id)
-            
-            if not is_member:
-                query.answer(f"شما عضو کانال {REQUIRED_CHANNEL} نیستید!", show_alert=True)
-                return
-            
-            player = Player(user.id, user.username, user.first_name)
-            player.is_channel_member = is_member
-            
-            if game.add_player(player):
-                game_manager.user_games[user.id] = game.game_id
-                
-                keyboard = [
-                    [InlineKeyboardButton("🎮 پیوستن به بازی", callback_data=f"join_{game.game_id}")],
-                    [InlineKeyboardButton("✅ بررسی عضویت", callback_data=f"check_{game.game_id}")]
-                ]
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                
-                query.edit_message_text(
-                    text=game.get_game_info_text(),
-                    reply_markup=reply_markup
-                )
+        player = Player(user.id, user.username, user.first_name)
+        player.is_channel_member = False
         
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(check_and_join_async())
+        if game.add_player(player):
+            game_manager.user_games[user.id] = game.game_id
+            
+            keyboard = [
+                [InlineKeyboardButton("🎮 پیوستن به بازی", callback_data=f"join_{game.game_id}")],
+                [InlineKeyboardButton("✅ بررسی/تایید عضویت", callback_data=f"check_{game.game_id}")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            query.edit_message_text(
+                text=game.get_game_info_text(),
+                reply_markup=reply_markup
+            )
     
     elif data.startswith("check_"):
         game_id = data[6:]
@@ -902,44 +926,56 @@ def callback_handler(update: Update, context: CallbackContext):
         if not game:
             return
         
-        # بررسی عضویت همه بازیکنان
-        async def check_all_async():
-            all_members = True
-            non_members = []
+        # آپدیت پیام
+        keyboard = [
+            [InlineKeyboardButton("🎮 پیوستن به بازی", callback_data=f"join_{game.game_id}")],
+            [InlineKeyboardButton("✅ بررسی/تایید عضویت", callback_data=f"check_{game.game_id}")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        query.edit_message_text(
+            text=game.get_game_info_text(),
+            reply_markup=reply_markup
+        )
+        
+        # ارسال راهنمای تایید
+        query.message.reply_text(
+            f"🔍 برای تایید عضویت:\n\n"
+            f"۱. مطمئن شوید عضو کانال {REQUIRED_CHANNEL} هستید\n"
+            f"۲. از دستور /verify استفاده کنید\n"
+            f"۳. یا سازنده بازی می‌تواند شما را به صورت دستی تایید کند\n\n"
+            f"🎮 سازنده بازی: {game.get_player(game.creator_id).display_name if game.get_player(game.creator_id) else '?'}"
+        )
+    
+    elif data.startswith("manual_verify_"):
+        user_id = int(data[14:])
+        game = game_manager.get_player_game(user_id)
+        
+        if not game:
+            query.answer("شما در هیچ بازی فعالی نیستید!", show_alert=True)
+            return
+        
+        player = game.get_player(user_id)
+        if player:
+            player.verified_manually = True
+            query.answer("✅ عضویت شما تایید شد!", show_alert=True)
             
-            for player in game.players:
-                player.is_channel_member = await check_channel_membership(context, player.user_id)
-                if not player.is_channel_member:
-                    all_members = False
-                    non_members.append(player.display_name)
-            
+            # آپدیت پیام بازی
             keyboard = [
                 [InlineKeyboardButton("🎮 پیوستن به بازی", callback_data=f"join_{game.game_id}")],
-                [InlineKeyboardButton("✅ بررسی عضویت", callback_data=f"check_{game.game_id}")]
+                [InlineKeyboardButton("✅ بررسی/تایید عضویت", callback_data=f"check_{game.game_id}")]
             ]
-            
-            if game.state == "checking_members" and all_members:
-                keyboard = [
-                    [InlineKeyboardButton("▶️ شروع بازی (فقط سازنده)", callback_data=f"start_{game.game_id}")]
-                ]
-            
             reply_markup = InlineKeyboardMarkup(keyboard)
             
-            query.edit_message_text(
-                text=game.get_game_info_text(),
-                reply_markup=reply_markup
-            )
-            
-            # اگر همه عضویت دارند و سازنده است
-            if all_members and user.id == game.creator_id and game.state == "checking_members":
-                query.message.reply_text(
-                    f"✅ همه بازیکنان عضو کانال هستند!\n"
-                    f"🎮 شما سازنده بازی هستید. برای شروع بازی از /startgame استفاده کنید."
+            try:
+                context.bot.edit_message_text(
+                    chat_id=game.chat_id,
+                    message_id=game.message_id,
+                    text=game.get_game_info_text(),
+                    reply_markup=reply_markup
                 )
-        
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(check_all_async())
+            except:
+                pass
     
     elif data.startswith("start_"):
         game_id = data[6:]
@@ -1152,6 +1188,7 @@ def main():
     print("🤖 ربات پاسور Railway در حال راه‌اندازی...")
     print(f"📢 کانال اجباری: {REQUIRED_CHANNEL}")
     print("🎮 سازنده بازی: کسی که /newgame را می‌زند")
+    print("✅ تایید عضویت: دستور /verify برای تایید دستی")
     print("⚡ کنترل بازی: فقط سازنده می‌تواند /startgame و /stop را بزند")
     
     # ساخت Updater
@@ -1163,6 +1200,7 @@ def main():
     dispatcher.add_handler(CommandHandler("newgame", new_game_command))
     dispatcher.add_handler(CommandHandler("join", join_command))
     dispatcher.add_handler(CommandHandler("startgame", startgame_command))
+    dispatcher.add_handler(CommandHandler("verify", verify_command))
     dispatcher.add_handler(CommandHandler("stop", stop_command))
     dispatcher.add_handler(CommandHandler("leave", leave_command))
     dispatcher.add_handler(CommandHandler("status", status_command))
