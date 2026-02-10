@@ -458,60 +458,89 @@ game_manager = GameManager()
 # ==================== تایید عضویت ====================
 
 async def check_channel_membership(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
-    """بررسی عضویت کاربر در کانال - نسخه ساده و کارآمد"""
+    """بررسی عضویت کاربر در کانال - نسخه اصلاح شده"""
     try:
         logger.info(f"🔍 بررسی عضویت کاربر {user_id} در {REQUIRED_CHANNEL}")
         
+        # ابتدا بررسی کنیم آیا کانال با @ شروع می‌شود یا عددی است
+        if REQUIRED_CHANNEL.startswith('@'):
+            chat_id = REQUIRED_CHANNEL
+        elif REQUIRED_CHANNEL.startswith('-100'):
+            chat_id = int(REQUIRED_CHANNEL)
+        else:
+            # اگر عدد معمولی است
+            try:
+                chat_id = int(REQUIRED_CHANNEL)
+            except:
+                chat_id = REQUIRED_CHANNEL
+        
         chat_member = await context.bot.get_chat_member(
-            chat_id=REQUIRED_CHANNEL,
+            chat_id=chat_id,
             user_id=user_id
         )
         
         logger.info(f"وضعیت کاربر {user_id}: {chat_member.status}")
         
         # وضعیت‌های مجاز
-        allowed_statuses = ['member', 'administrator', 'creator']
+        if chat_member.status in ['member', 'administrator', 'creator']:
+            logger.info(f"✅ کاربر {user_id} عضو است")
+            return True
         
-        # بررسی وضعیت restricted
-        if chat_member.status == 'restricted':
+        # وضعیت restricted (محدود شده)
+        elif chat_member.status == 'restricted':
+            # در حالت restricted باید بررسی کنیم آیا کاربر می‌تواند پیام بفرستد یا می‌تواند پیام‌ها را ببیند
             if hasattr(chat_member, 'is_member'):
                 is_member = chat_member.is_member
                 logger.info(f"کاربر restricted - is_member: {is_member}")
             else:
-                is_member = getattr(chat_member, 'can_send_messages', False) or getattr(chat_member, 'can_read_messages', False)
-                logger.info(f"کاربر restricted - can_send: {getattr(chat_member, 'can_send_messages', False)}, can_read: {getattr(chat_member, 'can_read_messages', False)}")
-        else:
-            is_member = chat_member.status in allowed_statuses
+                # برای backward compatibility
+                is_member = False
+                for attr in ['can_send_messages', 'can_read_messages', 'can_send_media_messages']:
+                    if hasattr(chat_member, attr):
+                        value = getattr(chat_member, attr)
+                        if value:
+                            is_member = True
+                            break
+            
+            if is_member:
+                logger.info(f"✅ کاربر {user_id} عضو است (restricted اما member)")
+                return True
         
-        logger.info(f"نتیجه نهایی بررسی عضویت کاربر {user_id}: {is_member}")
-        return is_member
+        logger.info(f"❌ کاربر {user_id} عضو نیست. وضعیت: {chat_member.status}")
+        return False
         
     except TelegramError as e:
-        error_msg = str(e)
-        logger.error(f"❌ خطای تلگرام در بررسی عضویت کاربر {user_id}: {error_msg}")
+        error_msg = str(e).lower()
+        logger.error(f"❌ خطای تلگرام در بررسی عضویت کاربر {user_id}: {e}")
         
-        if "user not found" in error_msg.lower() or "not a member" in error_msg.lower():
+        if "user not found" in error_msg or "not a member" in error_msg:
             logger.info(f"کاربر {user_id} در کانال نیست")
             return False
-        elif "chat not found" in error_msg.lower():
+        elif "chat not found" in error_msg:
             logger.error(f"کانال {REQUIRED_CHANNEL} یافت نشد!")
             return False
-        elif "not enough rights" in error_msg.lower():
+        elif "not enough rights" in error_msg or "rights" in error_msg:
             logger.error(f"ربات دسترسی کافی در کانال {REQUIRED_CHANNEL} ندارد!")
             return False
+        elif "kicked" in error_msg:
+            logger.info(f"ربات از کانال {REQUIRED_CHANNEL} اخراج شده")
+            return False
         else:
-            logger.error(f"خطای ناشناخته در بررسی عضویت: {error_msg}")
+            logger.error(f"خطای ناشناخته در بررسی عضویت: {e}")
             return False
     except Exception as e:
         logger.error(f"❌ خطای کلی در بررسی عضویت کاربر {user_id}: {e}")
         return False
 
 async def send_verification_message(context: ContextTypes.DEFAULT_TYPE, user_id: int, game: Game) -> Optional[int]:
-    """ارسال پیام تایید عضویت به کاربر"""
+    """ارسال پیام تایید عضویت به کاربر - نسخه اصلاح شده"""
     try:
+        # حذف @ از ابتدای آیدی کانال برای لینک
+        channel_username = REQUIRED_CHANNEL.lstrip('@')
+        
         keyboard = [
             [
-                InlineKeyboardButton("📢 جوین شو در کانال", url=f"https://t.me/{REQUIRED_CHANNEL[1:]}"),
+                InlineKeyboardButton("📢 جوین شو در کانال", url=f"https://t.me/{channel_username}"),
                 InlineKeyboardButton("✅ بررسی عضویت من", callback_data=f"check_{game.game_id}_{user_id}")
             ],
             [
@@ -523,18 +552,19 @@ async def send_verification_message(context: ContextTypes.DEFAULT_TYPE, user_id:
         message = await context.bot.send_message(
             chat_id=user_id,
             text=f"🔐 تایید عضویت برای بازی پاسور\n\n"
-                 f"کانال اجباری: {REQUIRED_CHANNEL}\n"
-                 f"کد بازی: {game.game_id[-6:]}\n\n"
+                 f"📢 کانال اجباری: {REQUIRED_CHANNEL}\n"
+                 f"🔢 کد بازی: {game.game_id[-6:]}\n\n"
                  f"📋 مراحل:\n"
                  f"۱. روی 'جوین شو در کانال' کلیک کنید\n"
                  f"۲. به کانال بپیوندید (Join)\n"
                  f"۳. روی 'بررسی عضویت من' کلیک کنید\n\n"
-                 f"⚠️ بدون تایید عضویت نمی‌توانید بازی کنید.",
+                 f"⚠️ توجه: بدون تایید عضویت نمی‌توانید بازی کنید.\n"
+                 f"🔍 بعد از جوین، ۱۰-۲۰ ثانیه صبر کنید سپس بررسی کنید.",
             reply_markup=reply_markup
         )
         
         game_manager.add_pending_verification(user_id, game.game_id)
-        logger.info(f"✅ پیام تایید برای کاربر {user_id} ارسال شد")
+        logger.info(f"✅ پیام تایید برای کاربر {user_id} ارسال شد (Message ID: {message.message_id})")
         return message.message_id
         
     except Exception as e:
@@ -716,6 +746,228 @@ async def verify_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("❌ شما در این بازی نیستید!")
 
+async def startgame_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """شروع بازی - فقط سازنده"""
+    user = update.effective_user
+    game = game_manager.get_player_game(user.id)
+    
+    if not game:
+        await update.message.reply_text("❌ شما در هیچ بازی فعالی نیستید!")
+        return
+    
+    if user.id != game.creator_id:
+        await update.message.reply_text("❌ فقط سازنده بازی می‌تواند بازی را شروع کند!")
+        return
+    
+    if game.state != "waiting":
+        await update.message.reply_text("⚠️ بازی قبلاً شروع شده است!")
+        return
+    
+    if len(game.players) < 4:
+        await update.message.reply_text(f"❌ فقط {len(game.players)}/4 بازیکن وجود دارد! باید ۴ نفر کامل باشند.")
+        return
+    
+    not_verified_players = [p for p in game.players if not p.verified]
+    
+    if not_verified_players:
+        not_verified_names = []
+        for player in not_verified_players:
+            not_verified_names.append(player.display_name)
+            
+            if player.user_id not in game.verification_messages:
+                message_id = await send_verification_message(context, player.user_id, game)
+                if message_id:
+                    game.verification_messages[player.user_id] = message_id
+        
+        await update.message.reply_text(
+            f"⚠️ برخی بازیکنان عضویت خود را تایید نکرده‌اند!\n\n"
+            f"بازیکنان زیر باید عضویت خود را تایید کنند:\n"
+            f"{chr(10).join(['• ' + name for name in not_verified_names])}"
+        )
+        return
+    
+    if game.start_game():
+        chooser = game.get_player(game.trump_chooser_id)
+        
+        keyboard = [
+            [
+                InlineKeyboardButton("♥️ دل", callback_data=f"trump_{game.game_id}_hearts"),
+                InlineKeyboardButton("♦️ خشت", callback_data=f"trump_{game.game_id}_diamonds")
+            ],
+            [
+                InlineKeyboardButton("♣️ پیک", callback_data=f"trump_{game.game_id}_clubs"),
+                InlineKeyboardButton("♠️ گیشنیز", callback_data=f"trump_{game.game_id}_spades")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        try:
+            await context.bot.edit_message_text(
+                chat_id=game.chat_id,
+                message_id=game.message_id,
+                text=game.get_game_info_text(),
+                reply_markup=reply_markup
+            )
+        except:
+            pass
+        
+        if chooser:
+            # ایجاد کیبورد کارت‌ها برای بازیکن انتخاب کننده
+            pass
+        
+        await update.message.reply_text(f"✅ بازی شروع شد!\n🎮 اولین بازیکن ({chooser.display_name if chooser else '?'}) باید خال حکم را انتخاب کند.")
+    else:
+        await update.message.reply_text("❌ خطا در شروع بازی!")
+
+async def close_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """بستن بازی"""
+    user = update.effective_user
+    game = game_manager.get_player_game(user.id)
+    
+    if not game:
+        await update.message.reply_text("❌ شما در هیچ بازی فعالی نیستید!")
+        return
+    
+    if user.id != game.creator_id:
+        await update.message.reply_text("❌ فقط سازنده بازی می‌تواند بازی را ببندد!")
+        return
+    
+    if game_manager.delete_game(game.game_id):
+        try:
+            await context.bot.edit_message_text(
+                chat_id=game.chat_id,
+                message_id=game.message_id,
+                text=f"❌ بازی بسته شد!\n\n🎮 سازنده: {user.first_name}\n📅 تاریخ: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+            )
+        except:
+            pass
+        
+        await update.message.reply_text("✅ بازی با موفقیت بسته شد.")
+    else:
+        await update.message.reply_text("❌ خطا در بستن بازی!")
+
+async def leave_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """ترک بازی"""
+    user = update.effective_user
+    game = game_manager.get_player_game(user.id)
+    
+    if not game:
+        await update.message.reply_text("❌ شما در هیچ بازی فعالی نیستید!")
+        return
+    
+    if user.id == game.creator_id:
+        await update.message.reply_text("❌ شما سازنده بازی هستید! اگر می‌خواهید بازی را ببندید از /close استفاده کنید.")
+        return
+    
+    if game.state != "waiting":
+        await update.message.reply_text("❌ بازی در حال اجراست! نمی‌توانید ترک کنید.")
+        return
+    
+    if game.remove_player(user.id):
+        game_manager.user_games.pop(user.id, None)
+        
+        keyboard = [
+            [InlineKeyboardButton("🎮 پیوستن به بازی", callback_data=f"join_{game.game_id}")],
+            [
+                InlineKeyboardButton("▶️ شروع بازی", callback_data=f"start_{game.game_id}"),
+                InlineKeyboardButton("❌ بستن بازی", callback_data=f"close_{game.game_id}")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        try:
+            await context.bot.edit_message_text(
+                chat_id=game.chat_id,
+                message_id=game.message_id,
+                text=game.get_game_info_text(),
+                reply_markup=reply_markup
+            )
+        except:
+            pass
+        
+        await update.message.reply_text("✅ شما از بازی خارج شدید.")
+    else:
+        await update.message.reply_text("❌ خطا در خروج از بازی!")
+
+async def games_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """نمایش بازی‌های فعال"""
+    chat_id = update.effective_chat.id
+    games = game_manager.get_chat_games(chat_id)
+    
+    if not games:
+        await update.message.reply_text("❌ هیچ بازی فعالی در این گروه وجود ندارد!")
+        return
+    
+    text = "🎮 بازی‌های فعال در این گروه:\n\n"
+    
+    for i, game in enumerate(games, 1):
+        creator = game.get_player(game.creator_id)
+        text += f"{i}. کد بازی: {game.game_id[-6:]}\n"
+        text += f"   🎮 سازنده: {creator.display_name if creator else '?'}\n"
+        text += f"   👥 بازیکنان: {len(game.players)}/4\n"
+        text += f"   📊 وضعیت: "
+        
+        if game.state == "waiting":
+            text += "⏳ در انتظار"
+        elif game.state == "choosing_trump":
+            text += "👑 انتخاب حکم"
+        elif game.state == "playing":
+            text += "🎴 در حال بازی"
+        elif game.state == "finished":
+            text += "🏆 تمام شده"
+        
+        not_verified = len([p for p in game.players if not p.verified])
+        if not_verified > 0:
+            text += f" ({not_verified} نفر تایید نشده)"
+        
+        text += "\n\n"
+    
+    text += "📌 برای پیوستن به یک بازی از /join استفاده کنید."
+    
+    await update.message.reply_text(text)
+
+async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """وضعیت بازی فعلی"""
+    user = update.effective_user
+    game = game_manager.get_player_game(user.id)
+    
+    if not game:
+        await update.message.reply_text("❌ شما در هیچ بازی فعالی نیستید!")
+        return
+    
+    await update.message.reply_text(game.get_game_info_text())
+
+async def rules_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """قوانین بازی"""
+    rules_text = """
+🎴 **قوانین بازی پاسور (حکم):**
+
+📌 **تعداد بازیکنان:** ۴ نفر
+
+📌 **هدف بازی:** بردن حداقل ۷ دست از ۱۳ دست
+
+📌 **مراحل بازی:**
+
+1. **توزیع کارت‌ها:** ۱۳ کارت به هر بازیکن داده می‌شود.
+2. **انتخاب حکم:** اولین بازیکن یکی از ۴ خال را به عنوان حکم انتخاب می‌کند.
+3. **بازی کردن:** 
+   - بازیکن اول می‌تواند هر کارتی بازی کند.
+   - بازیکنان بعدی باید همخال بیاورند.
+   - اگر همخال نداشته باشند، می‌توانند هر کارتی بیاورند.
+   - کارت با خال حکم برنده دور است.
+4. **امتیازدهی:** هر دست برده شده ۱ امتیاز دارد.
+5. **پایان بازی:** بعد از ۱۳ دور، بازیکنی با بیشترین دست برده برنده است.
+
+📌 **قوانین ویژه:**
+- باید همخال بیاورید (اگر دارید).
+- خال حکم برتر از همه خال‌هاست.
+- در صورت تساوی، کارت با ارزش بیشتر برنده است.
+
+📢 **توجه:** برای بازی باید عضو کانال @konkorkhabar باشید.
+    """
+    
+    await update.message.reply_text(rules_text)
+
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """مدیریت کلیک‌ها"""
     query = update.callback_query
@@ -860,7 +1112,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 keyboard = [
                     [
-                        InlineKeyboardButton("📢 جوین شو در کانال", url=f"https://t.me/{REQUIRED_CHANNEL[1:]}"),
+                        InlineKeyboardButton("📢 جوین شو در کانال", url=f"https://t.me/{REQUIRED_CHANNEL.lstrip('@')}"),
                         InlineKeyboardButton("✅ بررسی عضویت من", callback_data=f"check_{game.game_id}_{user_id}")
                     ],
                     [
@@ -897,7 +1149,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             keyboard = [
                 [
-                    InlineKeyboardButton("📢 جوین شو در کانال", url=f"https://t.me/{REQUIRED_CHANNEL[1:]}"),
+                    InlineKeyboardButton("📢 جوین شو در کانال", url=f"https://t.me/{REQUIRED_CHANNEL.lstrip('@')}"),
                     InlineKeyboardButton("✅ بررسی عضویت من", callback_data=f"check_{game.game_id}_{user_id}")
                 ],
                 [
@@ -916,81 +1168,100 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
             
             await query.answer("پیام تازه‌سازی شد!", show_alert=False)
-
-# سایر توابع (startgame, close, leave, games, status, rules) را از کد قبلی کپی کن
-
-async def startgame_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """شروع بازی - فقط سازنده"""
-    user = update.effective_user
-    game = game_manager.get_player_game(user.id)
     
-    if not game:
-        await update.message.reply_text("❌ شما در هیچ بازی فعالی نیستید!")
-        return
-    
-    if user.id != game.creator_id:
-        await update.message.reply_text("❌ فقط سازنده بازی می‌تواند بازی را شروع کند!")
-        return
-    
-    if game.state != "waiting":
-        await update.message.reply_text("⚠️ بازی قبلاً شروع شده است!")
-        return
-    
-    if len(game.players) < 4:
-        await update.message.reply_text(f"❌ فقط {len(game.players)}/4 بازیکن وجود دارد! باید ۴ نفر کامل باشند.")
-        return
-    
-    not_verified_players = [p for p in game.players if not p.verified]
-    
-    if not_verified_players:
-        not_verified_names = []
-        for player in not_verified_players:
-            not_verified_names.append(player.display_name)
+    elif data.startswith("start_"):
+        game_id = data[6:]
+        game = game_manager.get_game(game_id)
+        
+        if not game:
+            await query.answer("بازی یافت نشد!", show_alert=True)
+            return
+        
+        if user.id != game.creator_id:
+            await query.answer("فقط سازنده می‌تواند بازی را شروع کند!", show_alert=True)
+            return
+        
+        if game.state != "waiting":
+            await query.answer("بازی قبلاً شروع شده!", show_alert=True)
+            return
+        
+        if len(game.players) < 4:
+            await query.answer(f"فقط {len(game.players)}/4 بازیکن وجود دارد!", show_alert=True)
+            return
+        
+        not_verified_players = [p for p in game.players if not p.verified]
+        
+        if not_verified_players:
+            await query.answer("برخی بازیکنان عضویت خود را تایید نکرده‌اند!", show_alert=True)
+            return
+        
+        if game.start_game():
+            chooser = game.get_player(game.trump_chooser_id)
             
-            if player.user_id not in game.verification_messages:
-                message_id = await send_verification_message(context, player.user_id, game)
-                if message_id:
-                    game.verification_messages[player.user_id] = message_id
-        
-        await update.message.reply_text(
-            f"⚠️ برخی بازیکنان عضویت خود را تایید نکرده‌اند!\n\n"
-            f"بازیکنان زیر باید عضویت خود را تایید کنند:\n"
-            f"{chr(10).join(['• ' + name for name in not_verified_names])}"
-        )
-        return
-    
-    if game.start_game():
-        chooser = game.get_player(game.trump_chooser_id)
-        
-        keyboard = [
-            [
-                InlineKeyboardButton("♥️ دل", callback_data=f"trump_{game.game_id}_hearts"),
-                InlineKeyboardButton("♦️ خشت", callback_data=f"trump_{game.game_id}_diamonds")
-            ],
-            [
-                InlineKeyboardButton("♣️ پیک", callback_data=f"trump_{game.game_id}_clubs"),
-                InlineKeyboardButton("♠️ گیشنیز", callback_data=f"trump_{game.game_id}_spades")
+            keyboard = [
+                [
+                    InlineKeyboardButton("♥️ دل", callback_data=f"trump_{game.game_id}_hearts"),
+                    InlineKeyboardButton("♦️ خشت", callback_data=f"trump_{game.game_id}_diamonds")
+                ],
+                [
+                    InlineKeyboardButton("♣️ پیک", callback_data=f"trump_{game.game_id}_clubs"),
+                    InlineKeyboardButton("♠️ گیشنیز", callback_data=f"trump_{game.game_id}_spades")
+                ]
             ]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        try:
-            await context.bot.edit_message_text(
-                chat_id=game.chat_id,
-                message_id=game.message_id,
-                text=game.get_game_info_text(),
-                reply_markup=reply_markup
-            )
-        except:
-            pass
-        
-        if chooser:
-            # در اینجا باید تابع create_cards_keyboard تعریف شود
-            pass
-        
-        await update.message.reply_text(f"✅ بازی شروع شد!\n🎮 اولین بازیکن ({chooser.display_name if chooser else '?'}) باید خال حکم را انتخاب کند.")
-    else:
-        await update.message.reply_text("❌ خطا در شروع بازی!")
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            try:
+                await query.edit_message_text(
+                    text=game.get_game_info_text(),
+                    reply_markup=reply_markup
+                )
+            except:
+                pass
+            
+            await query.answer(f"✅ بازی شروع شد! اولین بازیکن ({chooser.display_name if chooser else '?'}) باید خال حکم را انتخاب کند.", show_alert=True)
+        else:
+            await query.answer("❌ خطا در شروع بازی!", show_alert=True)
+    
+    elif data.startswith("trump_"):
+        parts = data.split("_")
+        if len(parts) >= 3:
+            game_id = parts[1]
+            suit_str = parts[2]
+            game = game_manager.get_game(game_id)
+            
+            if not game:
+                await query.answer("بازی یافت نشد!", show_alert=True)
+                return
+            
+            if user.id != game.trump_chooser_id:
+                await query.answer("شما نمی‌توانید حکم انتخاب کنید!", show_alert=True)
+                return
+            
+            suit_map = {
+                'hearts': Suit.HEARTS,
+                'diamonds': Suit.DIAMONDS,
+                'clubs': Suit.CLUBS,
+                'spades': Suit.SPADES
+            }
+            
+            if suit_str not in suit_map:
+                await query.answer("خال نامعتبر!", show_alert=True)
+                return
+            
+            suit = suit_map[suit_str]
+            
+            if game.choose_trump(user.id, suit):
+                await query.answer(f"✅ خال حکم انتخاب شد: {suit.value} {suit.persian_name}", show_alert=True)
+                
+                try:
+                    await query.edit_message_text(
+                        text=game.get_game_info_text(),
+                        reply_markup=None
+                    )
+                except:
+                    pass
+            else:
+                await query.answer("❌ خطا در انتخاب حکم!", show_alert=True)
 
 # ==================== اجرای ربات ====================
 
@@ -1001,12 +1272,14 @@ def main():
     print(f"📢 کانال اجباری: {REQUIRED_CHANNEL}")
     print("✅ سیستم تایید عضویت فعال")
     
+    # تنظیم connection timeout‌های کوتاه‌تر
     application = Application.builder() \
         .token(TOKEN) \
-        .connect_timeout(30.0) \
-        .read_timeout(30.0) \
-        .write_timeout(30.0) \
-        .pool_timeout(30.0) \
+        .connect_timeout(15.0) \
+        .read_timeout(15.0) \
+        .write_timeout(15.0) \
+        .pool_timeout(15.0) \
+        .get_updates_read_timeout(15.0) \
         .build()
     
     # اضافه کردن دستورات
@@ -1015,6 +1288,11 @@ def main():
     application.add_handler(CommandHandler("join", join_command))
     application.add_handler(CommandHandler("startgame", startgame_command))
     application.add_handler(CommandHandler("verify", verify_command))
+    application.add_handler(CommandHandler("close", close_command))
+    application.add_handler(CommandHandler("leave", leave_command))
+    application.add_handler(CommandHandler("games", games_command))
+    application.add_handler(CommandHandler("status", status_command))
+    application.add_handler(CommandHandler("rules", rules_command))
     
     application.add_handler(MessageHandler(filters.Regex(r'^/join_[A-Za-z0-9]{6}$'), join_command))
     
@@ -1023,11 +1301,14 @@ def main():
     print("✅ ربات آماده است!")
     print("🎮 دستور /newgame را در یک گروه امتحان کنید")
     
+    # تنظیمات polling با timeout کمتر
     application.run_polling(
         drop_pending_updates=True,
         allowed_updates=Update.ALL_TYPES,
-        poll_interval=1.0,
-        timeout=30
+        poll_interval=0.5,  # کاهش interval
+        timeout=10,
+        bootstrap_retries=-1,  # عدم تلاش مجدد برای اتصال اولیه
+        close_loop=False
     )
 
 if __name__ == "__main__":
