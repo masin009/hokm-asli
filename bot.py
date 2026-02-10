@@ -33,11 +33,12 @@ if not TOKEN:
     print("در Railway: Environment Variable با نام TELEGRAM_BOT_TOKEN ایجاد کن")
     exit(1)
 
-# کانال اجباری
-REQUIRED_CHANNEL = "@konkorkhabar"
+# کانال اجباری - بدون @
+REQUIRED_CHANNEL = "konkorkhabar"
+REQUIRED_CHANNEL_LINK = f"https://t.me/{REQUIRED_CHANNEL}"
 
 print(f"✅ توکن خوانده شد")
-print(f"📢 کانال اجباری: {REQUIRED_CHANNEL}")
+print(f"📢 کانال اجباری: @{REQUIRED_CHANNEL}")
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -343,7 +344,7 @@ class Game:
             for i, player in enumerate(self.players, 1):
                 status = "✅ تایید شده" if player.verified else "⏳ در انتظار تایید"
                 text += f"{i}. {player.display_name} - {status}\n"
-            text += f"\n📢 برای بازی باید عضو کانال {REQUIRED_CHANNEL} باشید.\n"
+            text += f"\n📢 برای بازی باید عضو کانال @{REQUIRED_CHANNEL} باشید.\n"
             text += f"🎮 سازنده: {self.get_player(self.creator_id).display_name if self.get_player(self.creator_id) else '?'}"
         
         elif self.state == "choosing_trump":
@@ -489,7 +490,7 @@ async def send_verification_message(context: CallbackContext, user_id: int, game
     try:
         keyboard = [
             [
-                InlineKeyboardButton("📢 جوین شو در کانال", url=f"https://t.me/{REQUIRED_CHANNEL[1:]}"),
+                InlineKeyboardButton("📢 جوین شو در کانال", url=REQUIRED_CHANNEL_LINK),
                 InlineKeyboardButton("✅ بررسی عضویت من", callback_data=f"check_{game.game_id}_{user_id}")
             ],
             [
@@ -501,13 +502,12 @@ async def send_verification_message(context: CallbackContext, user_id: int, game
         message = await context.bot.send_message(
             chat_id=user_id,
             text=f"🔐 تایید عضویت برای بازی پاسور\n\n"
-                 f"کانال اجباری: {REQUIRED_CHANNEL}\n"
+                 f"کانال اجباری: @{REQUIRED_CHANNEL}\n"
                  f"کد بازی: {game.game_id[-6:]}\n\n"
                  f"📋 مراحل:\n"
                  f"۱. روی 'جوین شو در کانال' کلیک کنید\n"
                  f"۲. به کانال بپیوندید (Join)\n"
-                 f"۳. روی 'بررسی عضویت من' کلیک کنید\n"
-                 f"۴. اگر مشکل بود، 'تازه سازی' را بزنید\n\n"
+                 f"۳. روی 'بررسی عضویت من' کلیک کنید\n\n"
                  f"⚠️ بدون تایید عضویت نمی‌توانید بازی کنید.",
             reply_markup=reply_markup
         )
@@ -515,6 +515,7 @@ async def send_verification_message(context: CallbackContext, user_id: int, game
         # ذخیره کاربر در لیست انتظار تایید
         game_manager.add_pending_verification(user_id, game.game_id)
         
+        logger.info(f"✅ پیام تایید برای کاربر {user_id} ارسال شد")
         return message.message_id
     except Exception as e:
         logger.error(f"خطا در ارسال پیام تایید به کاربر {user_id}: {e}")
@@ -534,75 +535,66 @@ async def send_verification_message(context: CallbackContext, user_id: int, game
         
         return None
 
-async def check_channel_membership(context: CallbackContext, user_id: int) -> bool:
-    """بررسی عضویت کاربر در کانال"""
+async def check_channel_membership_simple(context: CallbackContext, user_id: int) -> bool:
+    """بررسی ساده عضویت کاربر در کانال - نسخه اصلاح شده"""
     try:
-        # ابتدا بررسی کنیم که آیا ربات در کانال است
-        try:
-            bot_member = await context.bot.get_chat_member(
-                chat_id=REQUIRED_CHANNEL,
-                user_id=context.bot.id
-            )
-            logger.info(f"ربات در کانال است با وضعیت: {bot_member.status}")
-        except Exception as bot_error:
-            logger.error(f"ربات در کانال نیست یا دسترسی ندارد: {bot_error}")
-            return False
+        logger.info(f"🔍 بررسی عضویت کاربر {user_id} در @{REQUIRED_CHANNEL}")
         
-        # حالا بررسی عضویت کاربر
-        try:
-            chat_member = await context.bot.get_chat_member(
-                chat_id=REQUIRED_CHANNEL,
-                user_id=user_id
-            )
-            
-            logger.info(f"وضعیت کاربر {user_id} در کانال: {chat_member.status}")
-            
-            # وضعیت‌های مجاز
-            allowed_statuses = ['member', 'administrator', 'creator']
-            
-            # بررسی وضعیت restricted
-            if chat_member.status == 'restricted':
-                # بررسی کنیم آیا کاربر می‌تواند پیام ببیند یا نه
-                if hasattr(chat_member, 'is_member'):
-                    is_member = chat_member.is_member
-                else:
-                    # برای نسخه‌های قدیمی‌تر تلگرام
-                    is_member = chat_member.can_send_messages or chat_member.can_read_messages
+        # بررسی عضویت کاربر
+        chat_member = await context.bot.get_chat_member(
+            chat_id=f"@{REQUIRED_CHANNEL}",  # با @ شروع شود
+            user_id=user_id
+        )
+        
+        logger.info(f"وضعیت کاربر {user_id}: {chat_member.status}")
+        
+        # وضعیت‌های مجاز
+        allowed_statuses = ['member', 'administrator', 'creator']
+        
+        # بررسی وضعیت restricted
+        if chat_member.status == 'restricted':
+            # بررسی کنیم آیا کاربر می‌تواند پیام ببیند یا نه
+            if hasattr(chat_member, 'is_member'):
+                is_member = chat_member.is_member
+                logger.info(f"کاربر restricted - is_member: {is_member}")
             else:
-                is_member = chat_member.status in allowed_statuses
-            
-            logger.info(f"نتیجه بررسی عضویت کاربر {user_id}: {is_member}")
-            return is_member
-            
-        except Exception as user_error:
-            logger.error(f"خطا در بررسی عضویت کاربر {user_id}: {user_error}")
-            
-            # بررسی نوع خطا
-            error_msg = str(user_error).lower()
-            if "user not found" in error_msg or "not a member" in error_msg:
-                logger.info(f"کاربر {user_id} در کانال نیست")
-                return False
-            elif "chat not found" in error_msg:
-                logger.error(f"کانال {REQUIRED_CHANNEL} یافت نشد!")
-                return False
-            elif "not enough rights" in error_msg:
-                logger.error(f"ربات دسترسی کافی در کانال {REQUIRED_CHANNEL} ندارد!")
-                return False
-            else:
-                logger.error(f"خطای ناشناخته در بررسی عضویت: {user_error}")
-                return False
-                
+                # برای نسخه‌های قدیمی‌تر تلگرام
+                is_member = getattr(chat_member, 'can_send_messages', False) or getattr(chat_member, 'can_read_messages', False)
+                logger.info(f"کاربر restricted - can_send: {getattr(chat_member, 'can_send_messages', False)}, can_read: {getattr(chat_member, 'can_read_messages', False)}")
+        else:
+            is_member = chat_member.status in allowed_statuses
+        
+        logger.info(f"نتیجه نهایی بررسی عضویت کاربر {user_id}: {is_member}")
+        return is_member
+        
     except Exception as e:
-        logger.error(f"خطای کلی در بررسی عضویت کاربر {user_id}: {e}")
-        return False
+        error_msg = str(e)
+        logger.error(f"خطا در بررسی عضویت کاربر {user_id}: {error_msg}")
+        
+        # بررسی نوع خطا
+        if "user not found" in error_msg.lower():
+            logger.info(f"کاربر {user_id} در کانال نیست")
+            return False
+        elif "chat not found" in error_msg.lower():
+            logger.error(f"کانال @{REQUIRED_CHANNEL} یافت نشد!")
+            return False
+        elif "not enough rights" in error_msg.lower():
+            logger.error(f"ربات دسترسی کافی در کانال @{REQUIRED_CHANNEL} ندارد!")
+            return False
+        elif "user is deactivated" in error_msg.lower():
+            logger.info(f"کاربر {user_id} غیرفعال است")
+            return False
+        else:
+            logger.error(f"خطای ناشناخته در بررسی عضویت: {error_msg}")
+            return False
 
 async def verify_player_membership(context: CallbackContext, user_id: int, game: Game) -> Tuple[bool, str]:
     """بررسی و تایید عضویت یک بازیکن - بازگشت وضعیت و پیام"""
     try:
-        logger.info(f"شروع بررسی عضویت کاربر {user_id} برای بازی {game.game_id}")
+        logger.info(f"🔐 شروع بررسی عضویت کاربر {user_id} برای بازی {game.game_id[-6:]}")
         
-        # بررسی عضویت
-        is_member = await check_channel_membership(context, user_id)
+        # بررسی عضویت با نسخه ساده
+        is_member = await check_channel_membership_simple(context, user_id)
         logger.info(f"نتیجه بررسی عضویت کاربر {user_id}: {is_member}")
         
         player = game.get_player(user_id)
@@ -648,7 +640,7 @@ async def verify_player_membership(context: CallbackContext, user_id: int, game:
             except Exception as send_error:
                 logger.error(f"خطا در ارسال پیام تایید: {send_error}")
             
-            return False, f"شما عضو کانال {REQUIRED_CHANNEL} نیستید!\nلطفا ابتدا به کانال جوین شوید سپس دوباره بررسی کنید."
+            return False, f"شما عضو کانال @{REQUIRED_CHANNEL} نیستید!\nلطفا ابتدا به کانال جوین شوید سپس دوباره بررسی کنید."
             
     except Exception as e:
         logger.error(f"خطا در تایید عضویت کاربر {user_id}: {e}")
@@ -667,7 +659,7 @@ async def periodic_membership_check(context: CallbackContext):
                         # بررسی مجدد عضویت (اگر بیش از 5 دقیقه از آخرین بررسی گذشته)
                         time_diff = (datetime.now() - player.last_checked).total_seconds()
                         if time_diff > 300:  # هر 5 دقیقه
-                            is_member = await check_channel_membership(context, player.user_id)
+                            is_member = await check_channel_membership_simple(context, player.user_id)
                             
                             if not is_member:
                                 # اگر قبلاً تایید شده بود ولی الان عضو نیست
@@ -723,7 +715,7 @@ def start_command(update: Update, context: CallbackContext):
         "/status - وضعیت بازی فعلی\n"
         "/verify - بررسی عضویت من\n"
         "/rules - قوانین بازی\n\n"
-        f"📢 برای بازی باید عضو کانال {REQUIRED_CHANNEL} باشید."
+        f"📢 برای بازی باید عضو کانال @{REQUIRED_CHANNEL} باشید."
     )
 
 def new_game_command(update: Update, context: CallbackContext):
@@ -845,8 +837,8 @@ def verify_command(update: Update, context: CallbackContext):
                         text=game.get_game_info_text(),
                         reply_markup=reply_markup
                     )
-                except:
-                    pass
+                except Exception as e:
+                    logger.error(f"خطا در آپدیت پیام بازی: {e}")
                 
                 update.message.reply_text(
                     f"✅ عضویت شما تایید شد!\n"
@@ -856,9 +848,9 @@ def verify_command(update: Update, context: CallbackContext):
             else:
                 update.message.reply_text(
                     f"❌ {message}\n\n"
-                    f"کانال اجباری: {REQUIRED_CHANNEL}\n\n"
+                    f"کانال اجباری: @{REQUIRED_CHANNEL}\n\n"
                     f"لطفا ابتدا به کانال زیر جوین شوید:\n"
-                    f"{REQUIRED_CHANNEL}\n\n"
+                    f"@{REQUIRED_CHANNEL}\n\n"
                     f"سپس دوباره /verify را بزنید."
                 )
         else:
@@ -1127,7 +1119,7 @@ def rules_command(update: Update, context: CallbackContext):
         "• هر گروه می‌تواند چندین بازی همزمان داشته باشد\n"
         "• فقط سازنده می‌تواند بازی را شروع کند (/startgame)\n"
         "• فقط سازنده می‌تواند بازی را ببندد (/close)\n"
-        f"• برای بازی باید عضو کانال {REQUIRED_CHANNEL} باشید\n"
+        f"• برای بازی باید عضو کانال @{REQUIRED_CHANNEL} باشید\n"
         "• برای تایید عضویت از /verify استفاده کنید"
     )
     
@@ -1291,7 +1283,7 @@ def callback_handler(update: Update, context: CallbackContext):
                     try:
                         query.edit_message_text(
                             text=f"✅ عضویت شما تایید شد!\n\n"
-                                 f"کانال: {REQUIRED_CHANNEL}\n"
+                                 f"کانال: @{REQUIRED_CHANNEL}\n"
                                  f"کد بازی: {game.game_id[-6:]}\n\n"
                                  f"🎮 حالا می‌توانید در بازی شرکت کنید.",
                             reply_markup=None
@@ -1302,7 +1294,7 @@ def callback_handler(update: Update, context: CallbackContext):
                     # اگر عضو نیست، پیام جدید بفرست
                     keyboard = [
                         [
-                            InlineKeyboardButton("📢 جوین شو در کانال", url=f"https://t.me/{REQUIRED_CHANNEL[1:]}"),
+                            InlineKeyboardButton("📢 جوین شو در کانال", url=REQUIRED_CHANNEL_LINK),
                             InlineKeyboardButton("✅ بررسی عضویت من", callback_data=f"check_{game.game_id}_{user_id}")
                         ],
                         [
@@ -1314,7 +1306,7 @@ def callback_handler(update: Update, context: CallbackContext):
                     try:
                         query.edit_message_text(
                             text=f"❌ {message}\n\n"
-                                 f"کانال اجباری: {REQUIRED_CHANNEL}\n"
+                                 f"کانال اجباری: @{REQUIRED_CHANNEL}\n"
                                  f"کد بازی: {game.game_id[-6:]}\n\n"
                                  f"لطفا:\n"
                                  f"۱. روی دکمه 'جوین شو در کانال' کلیک کنید\n"
@@ -1350,7 +1342,7 @@ def callback_handler(update: Update, context: CallbackContext):
             # فقط پیام را تازه کنیم
             keyboard = [
                 [
-                    InlineKeyboardButton("📢 جوین شو در کانال", url=f"https://t.me/{REQUIRED_CHANNEL[1:]}"),
+                    InlineKeyboardButton("📢 جوین شو در کانال", url=REQUIRED_CHANNEL_LINK),
                     InlineKeyboardButton("✅ بررسی عضویت من", callback_data=f"check_{game.game_id}_{user_id}")
                 ],
                 [
@@ -1362,7 +1354,7 @@ def callback_handler(update: Update, context: CallbackContext):
             try:
                 query.edit_message_text(
                     text=f"🔄 پیام تازه‌سازی شد!\n\n"
-                         f"کانال اجباری: {REQUIRED_CHANNEL}\n"
+                         f"کانال اجباری: @{REQUIRED_CHANNEL}\n"
                          f"کد بازی: {game.game_id[-6:]}\n\n"
                          f"لطفا عضویت خود را بررسی کنید:",
                     reply_markup=reply_markup
@@ -1646,7 +1638,7 @@ def main():
     """تابع اصلی"""
     
     print("🤖 ربات پاسور Railway در حال راه‌اندازی...")
-    print(f"📢 کانال اجباری: {REQUIRED_CHANNEL}")
+    print(f"📢 کانال اجباری: @{REQUIRED_CHANNEL}")
     print("✅ سیستم تایید عضویت اتوماتیک فعال")
     print("✅ سیستم بررسی دوره‌ای عضویت فعال (هر 5 دقیقه)")
     print("🎮 چندین بازی همزمان در یک گروه")
@@ -1689,8 +1681,13 @@ def main():
     print("✅ ربات آماده است!")
     print("🎮 دستور /newgame را در یک گروه امتحان کنید")
     
-    # شروع ربات
-    updater.start_polling()
+    # شروع ربات با polling
+    updater.start_polling(
+        timeout=10,
+        drop_pending_updates=True,
+        allowed_updates=Update.ALL_TYPES
+    )
+    
     updater.idle()
 
 if __name__ == "__main__":
