@@ -1,0 +1,17 @@
+[deploy]
+buildCommand = "pip install -r requirements.txt"
+startCommand = "python bot.py"
+
+[build]
+builder = "nixpacks"
+
+[[services]]
+port = 8080
+name = "bot"
+type = "web"
+command = "python bot.py"
+
+[services.concurrency]
+max = 1  # فقط یک instance
+hard = 1
+soft = 1
