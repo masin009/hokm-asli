@@ -3,7 +3,7 @@ import random
 import logging
 import asyncio
 from enum import Enum
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Tuple, Optional
 from collections import defaultdict
 
@@ -12,18 +12,33 @@ from telegram.ext import (
     Application,
     CommandHandler,
     CallbackQueryHandler,
-    ContextTypes
+    ContextTypes,
+    MessageHandler,
+    filters
 )
-from telegram.error import TelegramError
+from telegram.error import TelegramError, BadRequest
 
 # ==================== تنظیمات ====================
-TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN") or os.environ.get("TOKEN")
+
+if not TOKEN:
+    try:
+        from dotenv import load_dotenv
+        load_dotenv()
+        TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN") or os.environ.get("TOKEN")
+    except:
+        pass
 
 if not TOKEN:
     print("❌ توکن یافت نشد!")
+    print("در Railway: Environment Variable با نام TELEGRAM_BOT_TOKEN ایجاد کن")
     exit(1)
 
+# کانال اجباری - با @
 REQUIRED_CHANNEL = "@konkorkhabar"
+
+print(f"✅ توکن خوانده شد")
+print(f"📢 کانال اجباری: {REQUIRED_CHANNEL}")
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -55,6 +70,7 @@ class Rank:
         self.value = value
         self.persian_name = persian_name
 
+# تعریف رتبه‌های کارت
 RANKS = {
     '2': Rank('2', 2, 'دو'),
     '3': Rank('3', 3, 'سه'),
@@ -92,19 +108,28 @@ class Player:
         self.user_id = user_id
         self.username = username
         self.first_name = first_name
+        self.cards: List[Card] = []
         self.all_cards: List[Card] = []  # همه کارت‌ها
-        self.current_cards: List[Card] = []  # کارت‌های فعلی دست
         self.tricks_won: int = 0
+        self.score: int = 0
+        self.is_ready: bool = False
+        self.is_channel_member: bool = False
         self.verified: bool = False
+        self.has_started_bot: bool = False
+        self.last_checked: datetime = datetime.now()
         self.position: Optional[int] = None
         self.team: Optional[int] = None
-        self.has_started_bot: bool = False
     
     @property
     def display_name(self):
         if self.username:
             return f"@{self.username}"
         return self.first_name or f"User_{self.user_id}"
+    
+    def get_verification_status(self):
+        if self.verified:
+            return "✅ تایید شده"
+        return "⏳ در انتظار تایید"
 
 class Round:
     def __init__(self):
@@ -112,8 +137,8 @@ class Round:
         self.starting_player_id: Optional[int] = None
         self.winner_id: Optional[int] = None
     
-    def is_complete(self) -> bool:
-        return len(self.cards_played) == 4
+    def is_complete(self, players_count: int) -> bool:
+        return len(self.cards_played) == players_count
 
 class Game:
     def __init__(self, game_id: str, chat_id: int, creator_id: int):
@@ -130,10 +155,11 @@ class Game:
         self.trump_chooser_id: Optional[int] = None
         self.state: str = "waiting"
         self.message_id: Optional[int] = None
+        self.created_at = datetime.now()
         self.verification_messages: Dict[int, int] = {}
         self.player_cards_messages: Dict[int, int] = {}
         self.join_requests: Dict[int, str] = {}
-        self.first_round_dealt: bool = False  # آیا کارت‌های دور اول داده شده
+        self.first_round_done: bool = False
     
     def add_player(self, player: Player) -> bool:
         if len(self.players) >= 4:
@@ -150,7 +176,7 @@ class Game:
         return True
     
     def assign_teams(self):
-        """تیم‌بندی: بازیکنان روبه‌رو هم یار هستند"""
+        """تیم‌بندی بازیکنان بر اساس موقعیت در میز"""
         for i, player in enumerate(self.players):
             player.team = i % 2
     
@@ -165,17 +191,21 @@ class Game:
     def get_teams_info(self) -> str:
         if len(self.players) < 4:
             return ""
-        
         text = "\n🤝 **تیم‌ها:**\n"
         team0 = [p for p in self.players if p.team == 0]
         team1 = [p for p in self.players if p.team == 1]
-        
         if team0:
             text += f"• تیم ۱: {team0[0].display_name} و {team0[1].display_name}\n"
         if team1:
             text += f"• تیم ۲: {team1[0].display_name} و {team1[1].display_name}\n"
-        
         return text
+    
+    def remove_player(self, user_id: int) -> bool:
+        for i, player in enumerate(self.players):
+            if player.user_id == user_id:
+                self.players.pop(i)
+                return True
+        return False
     
     def get_player(self, user_id: int) -> Optional[Player]:
         for player in self.players:
@@ -191,17 +221,15 @@ class Game:
         random.shuffle(self.deck)
     
     def deal_first_round(self):
-        """دور اول: فقط ۵ کارت به هر بازیکن بده"""
+        """دور اول: فقط ۵ کارت بده"""
         cards_per_player = 5
         for i, player in enumerate(self.players):
             start = i * cards_per_player
             end = start + cards_per_player
-            player.all_cards = self.deck[start:end]  # ذخیره همه کارت‌ها
-            player.current_cards = player.all_cards.copy()  # کارت‌های فعلی
-            player.current_cards.sort(key=lambda c: (c.suit.value, c.rank.value))
-        
-        # 20 کارت اول داده شد، بقیه بعداً
-        self.first_round_dealt = True
+            player.all_cards = self.deck[start:end]
+            player.cards = player.all_cards.copy()
+            player.cards.sort(key=lambda c: (c.suit.value, c.rank.value))
+        self.first_round_done = True
     
     def deal_remaining_cards(self):
         """بعد از انتخاب حکم: بقیه کارت‌ها رو بده"""
@@ -210,24 +238,22 @@ class Game:
             start = i * cards_per_player
             end = start + cards_per_player
             player.all_cards = self.deck[start:end]
-            player.current_cards = player.all_cards.copy()
-            player.current_cards.sort(key=lambda c: (c.suit.value, c.rank.value))
+            player.cards = player.all_cards.copy()
+            player.cards.sort(key=lambda c: (c.suit.value, c.rank.value))
     
     def start_game(self):
         if len(self.players) < 4:
             return False
         
-        if not all(p.verified for p in self.players):
+        if not all(player.verified for player in self.players):
             return False
         
         self.initialize_deck()
-        self.deal_first_round()  # فقط 5 کارت بده
+        self.deal_first_round()  # فقط ۵ کارت بده
         
-        # ترتیب نشستن
         self.turn_order = [p.user_id for p in self.players]
         random.shuffle(self.turn_order)
         self.current_turn_index = 0
-        
         self.state = "choosing_trump"
         self.trump_chooser_id = self.turn_order[0]
         return True
@@ -240,7 +266,7 @@ class Game:
         self.deal_remaining_cards()  # بقیه کارت‌ها رو بده
         self.state = "playing"
         
-        # بازیکن انتخاب کننده حکم شروع کننده است
+        # بازیکن انتخاب کننده حکم شروع می‌کند
         self.turn_order = [p.user_id for p in self.players]
         chooser_index = self.turn_order.index(user_id)
         self.current_turn_index = chooser_index
@@ -249,27 +275,54 @@ class Game:
     
     def create_cards_keyboard(self, player_id: int) -> Optional[InlineKeyboardMarkup]:
         player = self.get_player(player_id)
-        if not player or not player.current_cards:
+        if not player or not player.cards:
             return None
         
+        cards_by_suit = defaultdict(list)
+        for i, card in enumerate(player.cards):
+            cards_by_suit[card.suit].append((i, card))
+        
         keyboard = []
-        row = []
         
-        for i, card in enumerate(player.current_cards):
-            row.append(InlineKeyboardButton(
-                f"{card.rank.symbol}{card.suit.value}",
-                callback_data=f"play_card_{self.game_id}_{i}"
-            ))
-            if len(row) == 4:
-                keyboard.append(row)
-                row = []
-        
-        if row:
+        if Suit.HEARTS in cards_by_suit:
+            row = []
+            for card_idx, card in cards_by_suit[Suit.HEARTS]:
+                row.append(InlineKeyboardButton(
+                    f"{card.rank.symbol}{card.suit.value}",
+                    callback_data=f"play_{self.game_id}_{card_idx}"
+                ))
             keyboard.append(row)
         
-        return InlineKeyboardMarkup(keyboard) if keyboard else None
+        if Suit.DIAMONDS in cards_by_suit:
+            row = []
+            for card_idx, card in cards_by_suit[Suit.DIAMONDS]:
+                row.append(InlineKeyboardButton(
+                    f"{card.rank.symbol}{card.suit.value}",
+                    callback_data=f"play_{self.game_id}_{card_idx}"
+                ))
+            keyboard.append(row)
+        
+        if Suit.CLUBS in cards_by_suit:
+            row = []
+            for card_idx, card in cards_by_suit[Suit.CLUBS]:
+                row.append(InlineKeyboardButton(
+                    f"{card.rank.symbol}{card.suit.value}",
+                    callback_data=f"play_{self.game_id}_{card_idx}"
+                ))
+            keyboard.append(row)
+        
+        if Suit.SPADES in cards_by_suit:
+            row = []
+            for card_idx, card in cards_by_suit[Suit.SPADES]:
+                row.append(InlineKeyboardButton(
+                    f"{card.rank.symbol}{card.suit.value}",
+                    callback_data=f"play_{self.game_id}_{card_idx}"
+                ))
+            keyboard.append(row)
+        
+        return InlineKeyboardMarkup(keyboard)
     
-    def can_play_card(self, player: Player, card: Card) -> bool:
+    def can_play_card(self, player: Player, card: Card, is_first_card: bool = False) -> bool:
         if not self.current_round.cards_played:
             return True
         
@@ -279,30 +332,44 @@ class Game:
         if card.suit == leading_suit:
             return True
         
-        has_leading = any(c.suit == leading_suit for c in player.current_cards)
-        return not has_leading
+        has_leading_suit = any(c.suit == leading_suit for c in player.cards)
+        
+        if has_leading_suit:
+            return False
+        
+        return True
     
     def play_card(self, user_id: int, card_index: int) -> Tuple[bool, Optional[Card], Optional[str]]:
         if self.state != "playing":
             return False, None, "بازی در حال اجرا نیست"
         
-        current_id = self.turn_order[self.current_turn_index]
-        if user_id != current_id:
+        current_player_id = self.turn_order[self.current_turn_index]
+        if user_id != current_player_id:
             return False, None, "نوبت شما نیست"
         
         player = self.get_player(user_id)
-        if not player or card_index >= len(player.current_cards):
+        if not player or card_index >= len(player.cards):
             return False, None, "کارت نامعتبر"
         
-        card = player.current_cards.pop(card_index)
+        card = player.cards[card_index]
+        
+        is_first_card = len(self.current_round.cards_played) == 0
+        if not self.can_play_card(player, card, is_first_card):
+            valid_cards = [c for c in player.cards if self.can_play_card(player, c, is_first_card)]
+            if valid_cards:
+                return False, None, f"باید همخال بیاورید. کارت‌های مجاز: {', '.join(c.persian_name for c in valid_cards)}"
+            else:
+                return False, None, "خطا در بررسی کارت"
+        
+        player.cards.pop(card_index)
         
         if len(self.current_round.cards_played) == 0:
             self.current_round.starting_player_id = user_id
         
         self.current_round.cards_played[user_id] = card
-        self.current_turn_index = (self.current_turn_index + 1) % 4
+        self.current_turn_index = (self.current_turn_index + 1) % len(self.players)
         
-        if self.current_round.is_complete():
+        if self.current_round.is_complete(len(self.players)):
             winner_id = self.get_round_winner()
             self.current_round.winner_id = winner_id
             
@@ -316,8 +383,9 @@ class Game:
             winner_index = self.turn_order.index(winner_id)
             self.current_turn_index = winner_index
             
-            if all(len(p.current_cards) == 0 for p in self.players):
+            if all(len(p.cards) == 0 for p in self.players):
                 self.state = "finished"
+                self.calculate_scores()
         
         return True, card, None
     
@@ -325,68 +393,103 @@ class Game:
         if not self.current_round.cards_played:
             return None
         
-        first_id = self.current_round.starting_player_id
-        first_card = self.current_round.cards_played[first_id]
+        first_player_id = self.current_round.starting_player_id
+        first_card = self.current_round.cards_played[first_player_id]
         leading_suit = first_card.suit
         
-        winner_id = first_id
-        winner_card = first_card
+        winning_player_id = first_player_id
+        winning_card = first_card
         
-        for pid, card in self.current_round.cards_played.items():
+        for player_id, card in self.current_round.cards_played.items():
             if card.suit == self.trump_suit:
-                if winner_card.suit != self.trump_suit:
-                    winner_id = pid
-                    winner_card = card
-                elif card.value > winner_card.value:
-                    winner_id = pid
-                    winner_card = card
-            elif card.suit == leading_suit and winner_card.suit == leading_suit:
-                if card.value > winner_card.value:
-                    winner_id = pid
-                    winner_card = card
-            elif card.suit == leading_suit and winner_card.suit != self.trump_suit:
-                winner_id = pid
-                winner_card = card
+                if winning_card.suit != self.trump_suit:
+                    winning_player_id = player_id
+                    winning_card = card
+                elif card.value > winning_card.value:
+                    winning_player_id = player_id
+                    winning_card = card
+            elif card.suit == leading_suit and winning_card.suit == leading_suit:
+                if card.value > winning_card.value:
+                    winning_player_id = player_id
+                    winning_card = card
+            elif card.suit == leading_suit and winning_card.suit != self.trump_suit:
+                winning_player_id = player_id
+                winning_card = card
         
-        return winner_id
+        return winning_player_id
+    
+    def calculate_scores(self):
+        for player in self.players:
+            player.score = player.tricks_won
     
     def get_game_info_text(self) -> str:
-        text = f"🎴 بازی پاسور - کد: {self.game_id[-6:]}\n\n"
+        text = f"🎴 بازی پاسور (حکم) - کد: {self.game_id[-6:]}\n\n"
         
         if self.state == "waiting":
-            text += f"⏳ انتظار ({len(self.players)}/4)\n\n👥 بازیکنان:\n"
-            for i, p in enumerate(self.players, 1):
-                status = "✅" if p.verified else "⏳"
-                text += f"{i}. {p.display_name} {status}\n"
+            text += f"⏳ در انتظار بازیکنان ({len(self.players)}/4)\n\n"
+            text += "👥 بازیکنان:\n"
+            for i, player in enumerate(self.players, 1):
+                status = player.get_verification_status()
+                text += f"{i}. {player.display_name} - {status}\n"
             
             if len(self.players) == 4:
                 text += self.get_teams_info()
             
-            text += f"\n📢 کانال: {REQUIRED_CHANNEL}"
+            text += f"\n📢 برای بازی باید عضو کانال {REQUIRED_CHANNEL} باشید.\n"
+            
+            creator = self.get_player(self.creator_id)
+            if creator:
+                text += f"🎮 سازنده: {creator.display_name}"
         
         elif self.state == "choosing_trump":
             chooser = self.get_player(self.trump_chooser_id)
-            text += "👑 **انتخاب حکم**\n\n"
+            text += "👑 **انتخاب خال حکم**\n\n"
             text += self.get_teams_info()
-            text += f"\n🎯 انتخاب کننده: **{chooser.display_name if chooser else '?'}**\n"
-            text += f"📊 دور: 1/13 (۵ کارت اولیه)\n\n"
-            text += "👇 **روی یکی از دکمه‌ها کلیک کنید:**"
+            text += f"\n🎯 **انتخاب کننده حکم:** {chooser.display_name if chooser else '?'}\n"
+            text += f"📊 **دور اول:** ۵ کارت\n\n"
+            text += "👇 **لطفا خال حکم را انتخاب کنید:**"
         
         elif self.state == "playing":
-            current = self.get_player(self.turn_order[self.current_turn_index])
-            text += f"🎮 دور: {len(self.rounds)+1}/13\n"
-            text += f"🃏 حکم: {self.trump_suit.value} {self.trump_suit.persian_name}\n"
-            text += f"🎯 نوبت: **{current.display_name if current else '?'}**\n\n"
-            text += "📊 دست‌های برده:\n"
-            for p in self.players:
-                text += f"• {p.display_name}: {p.tricks_won}\n"
+            current_player = self.get_player(self.turn_order[self.current_turn_index])
+            text += f"🎮 دور: {len(self.rounds) + 1}/13\n"
+            text += f"🃏 خال حکم: {self.trump_suit.value if self.trump_suit else '?'} {self.trump_suit.persian_name if self.trump_suit else ''}\n"
+            text += f"🎯 نوبت: {current_player.display_name if current_player else '?'}\n\n"
+            
+            text += "📊 دست‌های برده شده:\n"
+            for player in self.players:
+                text += f"• {player.display_name}: {player.tricks_won} دست\n"
+            
+            if self.current_round.cards_played:
+                text += "\n🎴 کارت‌های این دور:\n"
+                for player_id, card in self.current_round.cards_played.items():
+                    player = self.get_player(player_id)
+                    text += f"• {player.display_name if player else '?'}: {card.persian_name}\n"
+        
+        elif self.state == "finished":
+            text += "🏆 **بازی تمام شد!**\n\n"
+            text += self.get_teams_info() + "\n"
+            
+            team0_score = sum(p.tricks_won for p in self.players if p.team == 0)
+            team1_score = sum(p.tricks_won for p in self.players if p.team == 1)
+            
+            text += f"🎯 **امتیاز تیم ۱:** {team0_score} دست\n"
+            text += f"🎯 **امتیاز تیم ۲:** {team1_score} دست\n\n"
+            
+            if team0_score > team1_score:
+                text += "🏅 **برنده: تیم ۱** 🎉"
+            elif team1_score > team0_score:
+                text += "🏅 **برنده: تیم ۲** 🎉"
+            else:
+                text += "🤝 **مساوی!**"
         
         return text
     
-    def update_verification_status(self, user_id: int, verified: bool):
+    def update_verification_status(self, user_id: int, is_verified: bool):
         player = self.get_player(user_id)
         if player:
-            player.verified = verified
+            player.verified = is_verified
+            player.is_channel_member = is_verified
+            player.last_checked = datetime.now()
             return True
         return False
 
@@ -396,20 +499,25 @@ class GameManager:
     def __init__(self):
         self.games: Dict[str, Game] = {}
         self.user_games: Dict[int, str] = {}
-        self.user_started: Dict[int, bool] = {}
+        self.chat_games: Dict[int, List[str]] = defaultdict(list)
+        self.user_started_bot: Dict[int, bool] = {}
     
     def create_game(self, chat_id: int, creator: Player) -> Optional[Game]:
         if chat_id > 0:
             return None
         
-        game_id = f"game_{chat_id}_{int(datetime.now().timestamp())}"
-        game = Game(game_id, chat_id, creator.user_id)
+        game_id = f"hokm_{chat_id}_{int(datetime.now().timestamp())}"
+        game = Game(game_id=game_id, chat_id=chat_id, creator_id=creator.user_id)
         
         creator.verified = True
+        creator.is_channel_member = True
+        creator.has_started_bot = True
         game.add_player(creator)
         
         self.games[game_id] = game
         self.user_games[creator.user_id] = game_id
+        self.chat_games[chat_id].append(game_id)
+        
         return game
     
     def get_game(self, game_id: str) -> Optional[Game]:
@@ -417,351 +525,111 @@ class GameManager:
     
     def get_player_game(self, user_id: int) -> Optional[Game]:
         game_id = self.user_games.get(user_id)
-        return self.get_game(game_id) if game_id else None
+        if game_id:
+            return self.get_game(game_id)
+        return None
     
-    def mark_started(self, user_id: int):
-        self.user_started[user_id] = True
+    def mark_user_started(self, user_id: int):
+        self.user_started_bot[user_id] = True
     
-    def has_started(self, user_id: int) -> bool:
-        return self.user_started.get(user_id, False)
+    def has_user_started_bot(self, user_id: int) -> bool:
+        return self.user_started_bot.get(user_id, False)
+    
+    def add_join_request(self, user_id: int, game_id: str):
+        game = self.get_game(game_id)
+        if game:
+            game.join_requests[user_id] = game_id
 
 game_manager = GameManager()
 
 # ==================== تایید عضویت ====================
 
-async def check_membership(context, user_id: int) -> Tuple[bool, str]:
+async def check_channel_membership(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> Tuple[bool, str]:
     try:
-        chat = await context.bot.get_chat_member(REQUIRED_CHANNEL, user_id)
-        if chat.status in ['member', 'administrator', 'creator']:
-            return True, "✅ عضویت تایید شد"
-        if chat.status == 'restricted' and hasattr(chat, 'is_member') and chat.is_member:
-            return True, "✅ عضویت تایید شد"
-        return False, "❌ عضو کانال نیستید"
-    except:
-        return False, "❌ خطا در بررسی"
-
-async def verify_player(context, user_id: int, game: Game) -> Tuple[bool, str]:
-    is_member, msg = await check_membership(context, user_id)
-    if is_member:
-        game.update_verification_status(user_id, True)
-        await update_game_message(context, game)
-        return True, "✅ عضویت تایید شد!"
-    return False, msg
-
-# ==================== دستورات ====================
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    game_manager.mark_started(user.id)
-    
-    if update.effective_chat.id > 0:
-        await update.message.reply_text(
-            f"سلام {user.first_name}! 👋\n\n"
-            "🎴 **ربات بازی پاسور (حکم)**\n\n"
-            "📌 **برای بازی:**\n"
-            "۱. ربات را به گروه اضافه کنید\n"
-            "۲. در گروه /newgame بزنید\n\n"
-            f"📢 کانال اجباری: {REQUIRED_CHANNEL}"
+        channel = REQUIRED_CHANNEL.lstrip('@')
+        chat_member = await context.bot.get_chat_member(
+            chat_id=f"@{channel}",
+            user_id=user_id
         )
+        
+        if chat_member.status in ['member', 'administrator', 'creator']:
+            return True, "عضویت تایید شد"
+        elif chat_member.status == 'restricted':
+            if hasattr(chat_member, 'is_member') and chat_member.is_member:
+                return True, "عضویت تایید شد"
+        return False, "شما عضو کانال نیستید"
+    except Exception as e:
+        return False, f"خطا در بررسی: {str(e)[:50]}"
 
-async def newgame(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    user = update.effective_user
-    
-    if chat_id > 0:
-        keyboard = [[InlineKeyboardButton("➕ اضافه به گروه", url=f"https://t.me/{context.bot.username}?startgroup=new")]]
-        await update.message.reply_text("❌ بازی فقط در گروه!", reply_markup=InlineKeyboardMarkup(keyboard))
-        return
-    
-    if not game_manager.has_started(user.id):
-        await update.message.reply_text("❌ ابتدا در پیوی /start بزنید!")
-        return
-    
-    player = Player(user.id, user.username, user.first_name)
-    game = game_manager.create_game(chat_id, player)
-    if not game:
-        await update.message.reply_text("❌ خطا!")
-        return
-    
-    keyboard = [
-        [InlineKeyboardButton("🎮 پیوستن", callback_data=f"join_{game.game_id}")],
-        [InlineKeyboardButton("▶️ شروع", callback_data=f"start_{game.game_id}"),
-         InlineKeyboardButton("❌ بستن", callback_data=f"close_{game.game_id}")]
-    ]
-    
-    msg = await update.message.reply_text(
-        game.get_game_info_text(),
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-    game.message_id = msg.message_id
+async def send_verification_message(context: ContextTypes.DEFAULT_TYPE, user_id: int, game: Game) -> Optional[int]:
+    try:
+        channel = REQUIRED_CHANNEL.lstrip('@')
+        keyboard = [
+            [
+                InlineKeyboardButton("📢 جوین شو در کانال", url=f"https://t.me/{channel}"),
+                InlineKeyboardButton("✅ بررسی عضویت من", callback_data=f"verify_check_{game.game_id}")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        message = await context.bot.send_message(
+            chat_id=user_id,
+            text=f"🔐 تایید عضویت برای بازی پاسور\n\n"
+                 f"📢 کانال اجباری: {REQUIRED_CHANNEL}\n"
+                 f"🔢 کد بازی: {game.game_id[-6:]}\n\n"
+                 f"📋 مراحل:\n"
+                 f"۱. روی 'جوین شو در کانال' کلیک کنید\n"
+                 f"۲. به کانال بپیوندید\n"
+                 f"۳. روی 'بررسی عضویت من' کلیک کنید",
+            reply_markup=reply_markup
+        )
+        
+        game.verification_messages[user_id] = message.message_id
+        return message.message_id
+    except Exception as e:
+        logger.error(f"خطا در ارسال پیام تایید: {e}")
+        return None
 
-# ==================== مدیریت کلیک‌ها ====================
-
-async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    user = query.from_user
-    data = query.data
-    
-    # ========== پیوستن به بازی ==========
-    if data.startswith("join_"):
-        game_id = data[5:]
-        game = game_manager.get_game(game_id)
-        
-        if not game:
-            await query.answer("❌ بازی یافت نشد!", show_alert=True)
-            return
-        
-        if game.state != "waiting":
-            await query.answer("❌ بازی شروع شده!", show_alert=True)
-            return
-        
-        if len(game.players) >= 4:
-            await query.answer("❌ بازی تکمیل!", show_alert=True)
-            return
-        
-        if any(p.user_id == user.id for p in game.players):
-            await query.answer("⚠️ شما قبلاً پیوستید!", show_alert=True)
-            return
-        
-        # ارسال پیام به پیوی
-        try:
-            keyboard = [[InlineKeyboardButton("✅ تایید و پیوستن", callback_data=f"verify_join_{game.game_id}")]]
-            await context.bot.send_message(
-                user.id,
-                f"🎴 درخواست پیوستن به بازی\n\n🔢 کد: `{game.game_id[-6:]}`\n📢 کانال: {REQUIRED_CHANNEL}",
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
-            await query.answer("✅ به پیوی بروید!", show_alert=True)
-        except:
-            await query.answer("❌ ابتدا به ربات پیام دهید!", show_alert=True)
-    
-    # ========== تایید و پیوستن ==========
-    elif data.startswith("verify_join_"):
-        game_id = data[12:]
-        game = game_manager.get_game(game_id)
-        
-        if not game:
-            await query.answer("❌ بازی یافت نشد!", show_alert=True)
-            return
-        
-        if len(game.players) >= 4:
-            await query.answer("❌ بازی تکمیل!", show_alert=True)
-            return
-        
-        is_member, _ = await check_membership(context, user.id)
+async def verify_player_membership(context: ContextTypes.DEFAULT_TYPE, user_id: int, game: Game) -> Tuple[bool, str]:
+    try:
+        is_member, message = await check_channel_membership(context, user_id)
         
         if is_member:
-            player = Player(user.id, user.username, user.first_name)
-            player.verified = True
-            player.has_started_bot = True
+            game.update_verification_status(user_id, True)
             
-            if game.add_player(player):
-                game_manager.user_games[user.id] = game.game_id
-                game_manager.mark_started(user.id)
-                await update_game_message(context, game)
-                await query.edit_message_text("✅ عضویت تایید! به گروه برگردید.")
-                await query.answer("✅ به بازی اضافه شدید!", show_alert=True)
-            else:
-                await query.answer("❌ خطا!", show_alert=True)
-        else:
-            channel = REQUIRED_CHANNEL.lstrip('@')
-            keyboard = [[
-                InlineKeyboardButton("📢 جوین شو", url=f"https://t.me/{channel}"),
-                InlineKeyboardButton("🔄 بررسی", callback_data=f"verify_join_{game.game_id}")
-            ]]
-            await query.edit_message_text(
-                f"❌ عضو {REQUIRED_CHANNEL} نیستید!",
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
-    
-    # ========== شروع بازی ==========
-    elif data.startswith("start_"):
-        game_id = data[6:]
-        game = game_manager.get_game(game_id)
-        
-        if not game:
-            await query.answer("❌ بازی یافت نشد!", show_alert=True)
-            return
-        
-        if user.id != game.creator_id:
-            await query.answer("❌ فقط سازنده!", show_alert=True)
-            return
-        
-        if len(game.players) < 4:
-            await query.answer(f"❌ {len(game.players)}/4 نفر!", show_alert=True)
-            return
-        
-        if not all(p.verified for p in game.players):
-            await query.answer("❌ تایید نشده!", show_alert=True)
-            return
-        
-        if game.start_game():
-            await update_game_message(context, game)
-            
-            # ارسال ۵ کارت اول به هر بازیکن
-            for player in game.players:
-                if player.current_cards:
-                    teammate = game.get_teammate(player)
-                    team_text = f"\n🤝 یار: {teammate.display_name}" if teammate else ""
-                    
-                    cards = "\n".join([f"{i+1}. {c.persian_name}" for i, c in enumerate(player.current_cards)])
-                    
-                    await context.bot.send_message(
-                        player.user_id,
-                        f"🎴 **کارت‌های دور اول**{team_text}\n\n"
-                        f"🃏 ۵ کارت اولیه\n\n{cards}\n\n"
-                        f"⏳ منتظر انتخاب حکم..."
+            if user_id in game.verification_messages:
+                try:
+                    await context.bot.delete_message(
+                        chat_id=user_id,
+                        message_id=game.verification_messages[user_id]
                     )
-            
-            chooser = game.get_player(game.trump_chooser_id)
-            if chooser:
-                await context.bot.send_message(
-                    chooser.user_id,
-                    f"👑 **شما انتخاب کننده حکم هستید!**\n\n"
-                    f"لطفاً در گروه روی یکی از دکمه‌ها کلیک کنید:"
-                )
-            
-            await query.answer("✅ بازی شروع شد!", show_alert=True)
-    
-    # ========== انتخاب حکم - مستقیم وصل شده ==========
-    elif data.startswith("trump_select_"):
-        # فرمت: trump_select_{game_id}_{suit}
-        parts = data.split("_")
-        game_id = parts[2]
-        suit_str = parts[3]
-        
-        game = game_manager.get_game(game_id)
-        if not game:
-            await query.answer("❌ بازی یافت نشد!", show_alert=True)
-            return
-        
-        if user.id != game.trump_chooser_id:
-            await query.answer("❌ فقط انتخاب کننده حکم!", show_alert=True)
-            return
-        
-        suit_map = {
-            'hearts': Suit.HEARTS,
-            'diamonds': Suit.DIAMONDS,
-            'clubs': Suit.CLUBS,
-            'spades': Suit.SPADES
-        }
-        
-        suit = suit_map.get(suit_str)
-        if not suit:
-            await query.answer("❌ خال نامعتبر!", show_alert=True)
-            return
-        
-        if game.choose_trump(user.id, suit):
-            await query.answer(f"✅ حکم: {suit.value} {suit.persian_name}", show_alert=True)
-            
-            # حذف دکمه‌ها
-            try:
-                await query.edit_message_reply_markup(reply_markup=None)
-            except:
-                pass
+                except:
+                    pass
+                finally:
+                    game.verification_messages.pop(user_id, None)
             
             await update_game_message(context, game)
-            
-            # اطلاع به گروه
-            await context.bot.send_message(
-                game.chat_id,
-                f"🎉 **حکم انتخاب شد!**\n\n"
-                f"🃏 **{suit.value} {suit.persian_name}**\n"
-                f"👑 انتخاب کننده: {user.first_name}\n\n"
-                f"📌 بقیه کارت‌ها در حال ارسال..."
-            )
-            
-            # ارسال بقیه کارت‌ها به همه
-            for player in game.players:
-                if player.current_cards:
-                    keyboard = game.create_cards_keyboard(player.user_id)
-                    teammate = game.get_teammate(player)
-                    team_text = f"\n🤝 یار: {teammate.display_name}" if teammate else ""
-                    
-                    cards = "\n".join([f"{i+1}. {c.persian_name}" for i, c in enumerate(player.current_cards)])
-                    
-                    try:
-                        if player.user_id in game.player_cards_messages:
-                            await context.bot.delete_message(
-                                player.user_id,
-                                game.player_cards_messages[player.user_id]
-                            )
-                        
-                        msg = await context.bot.send_message(
-                            player.user_id,
-                            f"🎴 **کارت‌های کامل**{team_text}\n\n"
-                            f"🃏 حکم: {suit.value} {suit.persian_name}\n\n"
-                            f"{cards}\n\n"
-                            f"🎯 نوبت: {game.get_player(game.turn_order[game.current_turn_index]).display_name}",
-                            reply_markup=keyboard
-                        )
-                        game.player_cards_messages[player.user_id] = msg.message_id
-                    except:
-                        pass
-    
-    # ========== بازی کردن کارت - مستقیم وصل شده ==========
-    elif data.startswith("play_card_"):
-        parts = data.split("_")
-        game_id = parts[2]
-        card_idx = int(parts[3])
-        
-        game = game_manager.get_game(game_id)
-        if not game:
-            await query.answer("❌ بازی یافت نشد!", show_alert=True)
-            return
-        
-        success, card, error = game.play_card(user.id, card_idx)
-        
-        if success and card:
-            await query.answer(f"✅ {card.persian_name}", show_alert=True)
-            await update_game_message(context, game)
-            
-            # آپدیت کارت‌های بازیکن
-            player = game.get_player(user.id)
-            if player and player.current_cards:
-                keyboard = game.create_cards_keyboard(user.id)
-                if keyboard:
-                    try:
-                        if user.id in game.player_cards_messages:
-                            await context.bot.delete_message(
-                                user.id,
-                                game.player_cards_messages[user.id]
-                            )
-                        
-                        teammate = game.get_teammate(player)
-                        team_text = f"\n🤝 یار: {teammate.display_name}" if teammate else ""
-                        cards = "\n".join([f"{i+1}. {c.persian_name}" for i, c in enumerate(player.current_cards)])
-                        
-                        msg = await context.bot.send_message(
-                            user.id,
-                            f"🎴 **کارت‌های شما**{team_text}\n\n"
-                            f"🃏 حکم: {game.trump_suit.value} {game.trump_suit.persian_name}\n\n"
-                            f"{cards}\n\n"
-                            f"🎯 نوبت: {game.get_player(game.turn_order[game.current_turn_index]).display_name}",
-                            reply_markup=keyboard
-                        )
-                        game.player_cards_messages[user.id] = msg.message_id
-                    except:
-                        pass
+            return True, "✅ عضویت شما تایید شد! حالا می‌توانید بازی کنید."
         else:
-            await query.answer(f"❌ {error}", show_alert=True)
+            if user_id not in game.verification_messages:
+                await send_verification_message(context, user_id, game)
+            return False, f"❌ {message}\n\nلطفا به کانال {REQUIRED_CHANNEL} بپیوندید."
+    except Exception as e:
+        return False, f"خطا در بررسی عضویت: {str(e)[:50]}"
 
-async def update_game_message(context, game):
-    if not game.message_id:
-        return
-    
+async def update_game_message(context: ContextTypes.DEFAULT_TYPE, game: Game):
     try:
-        keyboard = None
         if game.state == "waiting":
             keyboard = [
-                [InlineKeyboardButton("🎮 پیوستن", callback_data=f"join_{game.game_id}")],
-                [InlineKeyboardButton("▶️ شروع", callback_data=f"start_{game.game_id}"),
-                 InlineKeyboardButton("❌ بستن", callback_data=f"close_{game.game_id}")]
+                [InlineKeyboardButton("🎮 پیوستن به بازی", callback_data=f"join_{game.game_id}")],
+                [
+                    InlineKeyboardButton("▶️ شروع بازی", callback_data=f"start_{game.game_id}"),
+                    InlineKeyboardButton("❌ بستن بازی", callback_data=f"close_{game.game_id}")
+                ]
             ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
         elif game.state == "choosing_trump":
-            # دکمه‌های مستقیم وصل شده
+            # ✅ تغییر ۱: دکمه‌ها مستقیم وصل شدن
             keyboard = [
                 [
                     InlineKeyboardButton("♥️ دل", callback_data=f"trump_select_{game.game_id}_hearts"),
@@ -772,28 +640,516 @@ async def update_game_message(context, game):
                     InlineKeyboardButton("♠️ پیک", callback_data=f"trump_select_{game.game_id}_spades")
                 ]
             ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+        else:
+            reply_markup = None
         
         await context.bot.edit_message_text(
             chat_id=game.chat_id,
             message_id=game.message_id,
             text=game.get_game_info_text(),
-            reply_markup=InlineKeyboardMarkup(keyboard) if keyboard else None
+            reply_markup=reply_markup
         )
-    except:
-        pass
+    except Exception as e:
+        logger.error(f"خطا در آپدیت پیام بازی: {e}")
 
-# ==================== اجرا ====================
+# ==================== دستورات ربات ====================
+
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    chat_id = update.effective_chat.id
+    
+    if chat_id > 0:
+        game_manager.mark_user_started(user.id)
+        
+        user_games = []
+        for game_id, game in game_manager.games.items():
+            if user.id in game.join_requests:
+                user_games.append(game)
+        
+        if user_games:
+            text = f"سلام {user.first_name}! 👋\n\n"
+            text += "🎴 به ربات بازی پاسور خوش آمدید!\n\n"
+            text += "📋 شما درخواست پیوستن به بازی زیر را دارید:\n\n"
+            
+            for game in user_games[:3]:
+                creator = game.get_player(game.creator_id)
+                text += f"🔢 کد بازی: {game.game_id[-6:]}\n"
+                text += f"👤 سازنده: {creator.display_name if creator else '?'}\n"
+                text += f"👥 بازیکنان: {len(game.players)}/4\n\n"
+                
+                keyboard = [
+                    [InlineKeyboardButton("✅ تایید عضویت و پیوستن", callback_data=f"verify_join_{game.game_id}")]
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                
+                await update.message.reply_text(text, reply_markup=reply_markup)
+                return
+        
+        keyboard = [
+            [InlineKeyboardButton("📋 راهنمای استفاده", callback_data="help_guide")],
+            [InlineKeyboardButton("🎮 بازی‌های فعال من", callback_data="my_games")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text(
+            f"سلام {user.first_name}! 👋\n\n"
+            "🎴 به ربات بازی پاسور (حکم) خوش آمدید!\n\n"
+            "📋 برای ایجاد بازی:\n"
+            "۱. ربات را به یک گروه اضافه کنید\n"
+            "۲. در گروه دستور /newgame را وارد کنید\n\n"
+            f"📢 برای بازی باید عضو کانال {REQUIRED_CHANNEL} باشید.",
+            reply_markup=reply_markup
+        )
+    else:
+        await update.message.reply_text(
+            f"سلام {user.first_name}! 👋\n\n"
+            "🎴 ربات بازی پاسور آماده است!\n"
+            "برای ایجاد بازی جدید /newgame را وارد کنید."
+        )
+
+async def new_game_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    user = update.effective_user
+    
+    if chat_id > 0:
+        keyboard = [
+            [InlineKeyboardButton("➕ اضافه کردن ربات به گروه", url=f"https://t.me/{context.bot.username}?startgroup=new")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text(
+            "❌ بازی فقط در گروه قابل ایجاد است!\n\n"
+            "لطفا:\n"
+            "۱. روی دکمه زیر کلیک کنید\n"
+            "۲. ربات را به گروه مورد نظر اضافه کنید\n"
+            "۳. سپس در گروه دستور /newgame را وارد کنید",
+            reply_markup=reply_markup
+        )
+        return
+    
+    if not game_manager.has_user_started_bot(user.id):
+        await update.message.reply_text(
+            "❌ ابتدا باید ربات را استارت کنید!\n\n"
+            "لطفا:\n"
+            "۱. به پیوی ربات بروید\n"
+            "۲. دستور /start را بزنید\n"
+            "۳. سپس دوباره تلاش کنید"
+        )
+        return
+    
+    player = Player(user.id, user.username, user.first_name)
+    game = game_manager.create_game(chat_id, player)
+    
+    if not game:
+        await update.message.reply_text("❌ خطا در ایجاد بازی!")
+        return
+    
+    keyboard = [
+        [InlineKeyboardButton("🎮 پیوستن به بازی", callback_data=f"join_{game.game_id}")],
+        [
+            InlineKeyboardButton("▶️ شروع بازی", callback_data=f"start_{game.game_id}"),
+            InlineKeyboardButton("❌ بستن بازی", callback_data=f"close_{game.game_id}")
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    message = await update.message.reply_text(
+        game.get_game_info_text(),
+        reply_markup=reply_markup
+    )
+    
+    game.message_id = message.message_id
+    
+    await update.message.reply_text(
+        f"✅ بازی جدید ایجاد شد!\n"
+        f"🎮 شما سازنده این بازی هستید.\n"
+        f"🔢 کد بازی: {game.game_id[-6:]}\n\n"
+        f"دیگران می‌توانند با کلیک روی 'پیوستن به بازی' به این بازی بپیوندند."
+    )
+
+async def verify_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    game = game_manager.get_player_game(user.id)
+    
+    if not game:
+        await update.message.reply_text("❌ شما در هیچ بازی فعالی نیستید!")
+        return
+    
+    success, message = await verify_player_membership(context, user.id, game)
+    await update.message.reply_text(message)
+
+# ==================== مدیریت کلیک‌ها ====================
+
+async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    user = query.from_user
+    data = query.data
+    
+    logger.info(f"📱 کلیک دریافت شد: {data} از کاربر {user.id}")
+    
+    if data == "help_guide":
+        keyboard = [
+            [InlineKeyboardButton("➕ اضافه کردن به گروه", url=f"https://t.me/{context.bot.username}?startgroup=new")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            text="📋 راهنمای استفاده از ربات:\n\n"
+                 "🎮 **مراحل ایجاد بازی:**\n"
+                 "۱. روی دکمه زیر کلیک کنید\n"
+                 "۲. ربات را به گروه اضافه کنید\n"
+                 "۳. در گروه دستور /newgame را بزنید\n\n"
+                 "👥 **مراحل پیوستن به بازی:**\n"
+                 "۱. در گروه روی 'پیوستن به بازی' کلیک کنید\n"
+                 "۲. به پیوی ربات می‌روید\n"
+                 "۳. عضویت خود را تایید می‌کنید\n"
+                 "۴. به صورت خودکار به بازی اضافه می‌شوید\n\n"
+                 f"📢 **کانال اجباری:** {REQUIRED_CHANNEL}",
+            reply_markup=reply_markup
+        )
+    
+    elif data.startswith("join_"):
+        game_id = data[5:]
+        game = game_manager.get_game(game_id)
+        
+        if not game:
+            await query.answer("❌ بازی یافت نشد!", show_alert=True)
+            return
+        
+        if game.state != "waiting":
+            await query.answer("❌ بازی در حال اجراست!", show_alert=True)
+            return
+        
+        if any(p.user_id == user.id for p in game.players):
+            await query.answer("⚠️ شما قبلاً در بازی هستید!", show_alert=True)
+            return
+        
+        if len(game.players) >= 4:
+            await query.answer("❌ بازی تکمیل است!", show_alert=True)
+            return
+        
+        game_manager.add_join_request(user.id, game_id)
+        
+        try:
+            keyboard = [
+                [InlineKeyboardButton("✅ تایید عضویت و پیوستن", callback_data=f"verify_join_{game.game_id}")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await context.bot.send_message(
+                chat_id=user.id,
+                text=f"🎴 درخواست پیوستن به بازی پاسور\n\n"
+                     f"🔢 کد بازی: {game.game_id[-6:]}\n"
+                     f"📢 کانال لازم: {REQUIRED_CHANNEL}\n\n"
+                     f"📋 برای پیوستن:\n"
+                     f"۱. عضو کانال شوید\n"
+                     f"۲. روی دکمه زیر کلیک کنید\n"
+                     f"۳. عضویت شما بررسی و به بازی اضافه می‌شوید",
+                reply_markup=reply_markup
+            )
+            
+            await query.answer("✅ به پیوی ربات بروید و عضویت خود را تایید کنید!", show_alert=True)
+            
+        except Exception as e:
+            logger.error(f"خطا در ارسال پیام به کاربر: {e}")
+            await query.answer("❌ ابتدا به ربات پیام بدهید!", show_alert=True)
+    
+    elif data.startswith("verify_join_"):
+        game_id = data[12:]
+        game = game_manager.get_game(game_id)
+        
+        if not game:
+            await query.answer("❌ بازی یافت نشد!", show_alert=True)
+            return
+        
+        if any(p.user_id == user.id for p in game.players):
+            await query.answer("⚠️ شما قبلاً در بازی هستید!", show_alert=True)
+            return
+        
+        if len(game.players) >= 4:
+            await query.answer("❌ بازی تکمیل است!", show_alert=True)
+            return
+        
+        is_member, message = await check_channel_membership(context, user.id)
+        
+        if is_member:
+            player = Player(user.id, user.username, user.first_name)
+            player.has_started_bot = True
+            player.verified = True
+            player.is_channel_member = True
+            
+            if game.add_player(player):
+                game_manager.user_games[user.id] = game.game_id
+                game_manager.mark_user_started(user.id)
+                
+                if user.id in game.join_requests:
+                    game.join_requests.pop(user.id)
+                
+                await update_game_message(context, game)
+                
+                await query.answer("✅ شما با موفقیت به بازی اضافه شدید!", show_alert=True)
+                
+                await query.edit_message_text(
+                    text=f"✅ تایید عضویت موفق!\n\n"
+                         f"🎮 شما به بازی اضافه شدید.\n"
+                         f"🔢 کد بازی: {game.game_id[-6:]}\n"
+                         f"👤 سازنده: {game.get_player(game.creator_id).display_name if game.get_player(game.creator_id) else '?'}\n\n"
+                         f"📌 برای دیدن وضعیت بازی به گروه برگردید.",
+                    reply_markup=None
+                )
+            else:
+                await query.answer("❌ خطا در اضافه کردن به بازی!", show_alert=True)
+        else:
+            channel = REQUIRED_CHANNEL.lstrip('@')
+            keyboard = [
+                [
+                    InlineKeyboardButton("📢 جوین شو در کانال", url=f"https://t.me/{channel}"),
+                    InlineKeyboardButton("🔄 بررسی مجدد", callback_data=f"verify_join_{game.game_id}")
+                ]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await query.edit_message_text(
+                text=f"❌ شما عضو کانال {REQUIRED_CHANNEL} نیستید!\n\n"
+                     f"⚠️ لطفا:\n"
+                     f"۱. به کانال بپیوندید\n"
+                     f"۲. سپس روی 'بررسی مجدد' کلیک کنید\n\n"
+                     f"🔢 کد بازی: {game.game_id[-6:]}",
+                reply_markup=reply_markup
+            )
+            
+            await query.answer("❌ هنوز عضو کانال نیستید!", show_alert=True)
+    
+    elif data.startswith("start_"):
+        game_id = data[6:]
+        game = game_manager.get_game(game_id)
+        
+        if not game:
+            await query.answer("❌ بازی یافت نشد!", show_alert=True)
+            return
+        
+        if user.id != game.creator_id:
+            await query.answer("❌ فقط سازنده می‌تواند بازی را شروع کند!", show_alert=True)
+            return
+        
+        if game.state != "waiting":
+            await query.answer("⚠️ بازی قبلاً شروع شده!", show_alert=True)
+            return
+        
+        if len(game.players) < 4:
+            await query.answer(f"❌ باید ۴ نفر باشند! فعلاً {len(game.players)} نفر هستند.", show_alert=True)
+            return
+        
+        not_verified = [p for p in game.players if not p.verified]
+        if not_verified:
+            names = ", ".join([p.display_name for p in not_verified])
+            await query.answer(f"❌ این بازیکنان تایید نشده‌اند: {names}", show_alert=True)
+            return
+        
+        if game.start_game():
+            await update_game_message(context, game)
+            
+            # ✅ تغییر ۲: ارسال ۵ کارت اول به هر بازیکن
+            for player in game.players:
+                if player.cards:
+                    teammate = game.get_teammate(player)
+                    teammate_text = f"\n🤝 **یار شما:** {teammate.display_name}" if teammate else ""
+                    
+                    cards_text = "\n".join([f"{i+1}. {card.persian_name}" for i, card in enumerate(player.cards)])
+                    
+                    try:
+                        await context.bot.send_message(
+                            chat_id=player.user_id,
+                            text=f"🎴 **کارت‌های دور اول**{teammate_text}\n\n"
+                                 f"🃏 ۵ کارت اولیه\n\n"
+                                 f"{cards_text}\n\n"
+                                 f"⏳ منتظر انتخاب حکم..."
+                        )
+                    except Exception as e:
+                        logger.error(f"خطا در ارسال کارت به {player.user_id}: {e}")
+            
+            chooser = game.get_player(game.trump_chooser_id)
+            if chooser:
+                try:
+                    await context.bot.send_message(
+                        chat_id=chooser.user_id,
+                        text=f"👑 **شما انتخاب کننده خال حکم هستید!**\n\n"
+                             f"لطفا در گروه روی یکی از دکمه‌های زیر کلیک کنید:\n"
+                             f"♥️ دل - ♦️ خشت - ♣️ گیشنیز - ♠️ پیک"
+                    )
+                except:
+                    pass
+            
+            await query.answer("✅ بازی شروع شد! اولین بازیکن باید خال حکم را انتخاب کند.", show_alert=True)
+        else:
+            await query.answer("❌ خطا در شروع بازی!", show_alert=True)
+    
+    # ✅ تغییر ۱: دکمه‌های انتخاب حکم مستقیم وصل شدن
+    elif data.startswith("trump_select_"):
+        parts = data.split("_")
+        if len(parts) >= 4:
+            game_id = parts[2]
+            suit_str = parts[3]
+            game = game_manager.get_game(game_id)
+            
+            if not game:
+                await query.answer("❌ بازی یافت نشد!", show_alert=True)
+                return
+            
+            if user.id != game.trump_chooser_id:
+                await query.answer("❌ فقط انتخاب کننده حکم می‌تواند خال را انتخاب کند!", show_alert=True)
+                return
+            
+            suit_map = {
+                'hearts': Suit.HEARTS,
+                'diamonds': Suit.DIAMONDS,
+                'clubs': Suit.CLUBS,
+                'spades': Suit.SPADES
+            }
+            
+            suit = suit_map.get(suit_str)
+            if not suit:
+                await query.answer("❌ خال نامعتبر!", show_alert=True)
+                return
+            
+            if game.choose_trump(user.id, suit):
+                await query.answer(f"✅ خال حکم انتخاب شد: {suit.value} {suit.persian_name}", show_alert=True)
+                
+                try:
+                    await query.edit_message_reply_markup(reply_markup=None)
+                except:
+                    pass
+                
+                await update_game_message(context, game)
+                
+                await context.bot.send_message(
+                    chat_id=game.chat_id,
+                    text=f"🎉 **خال حکم انتخاب شد!**\n\n"
+                         f"🃏 **حکم:** {suit.value} {suit.persian_name}\n"
+                         f"👑 **انتخاب کننده:** {user.first_name}\n\n"
+                         f"📌 بقیه کارت‌ها در حال ارسال..."
+                )
+                
+                # ارسال بقیه کارت‌ها به همه بازیکنان
+                for player in game.players:
+                    if player.cards:
+                        keyboard = game.create_cards_keyboard(player.user_id)
+                        if keyboard:
+                            try:
+                                if player.user_id in game.player_cards_messages:
+                                    try:
+                                        await context.bot.delete_message(
+                                            chat_id=player.user_id,
+                                            message_id=game.player_cards_messages[player.user_id]
+                                        )
+                                    except:
+                                        pass
+                                
+                                teammate = game.get_teammate(player)
+                                teammate_text = f"\n🤝 **یار شما:** {teammate.display_name}" if teammate else ""
+                                
+                                cards_text = "\n".join([f"{i+1}. {card.persian_name}" for i, card in enumerate(player.cards)])
+                                
+                                message = await context.bot.send_message(
+                                    chat_id=player.user_id,
+                                    text=f"🎴 **کارت‌های کامل شما**{teammate_text}\n\n"
+                                         f"🃏 **خال حکم:** {suit.value} {suit.persian_name}\n\n"
+                                         f"{cards_text}\n\n"
+                                         f"🎯 **نوبت:** {game.get_player(game.turn_order[game.current_turn_index]).display_name}",
+                                    reply_markup=keyboard
+                                )
+                                game.player_cards_messages[player.user_id] = message.message_id
+                            except Exception as e:
+                                logger.error(f"خطا در ارسال کارت به {player.user_id}: {e}")
+            else:
+                await query.answer("❌ خطا در انتخاب حکم!", show_alert=True)
+    
+    elif data.startswith("play_"):
+        parts = data.split("_")
+        if len(parts) >= 3:
+            game_id = parts[1]
+            card_index = int(parts[2])
+            game = game_manager.get_game(game_id)
+            
+            if not game:
+                await query.answer("❌ بازی یافت نشد!", show_alert=True)
+                return
+            
+            success, card, error_msg = game.play_card(user.id, card_index)
+            
+            if success and card:
+                await query.answer(f"✅ کارت بازی شد: {card.persian_name}", show_alert=True)
+                
+                await update_game_message(context, game)
+                
+                player = game.get_player(user.id)
+                if player and player.cards:
+                    keyboard = game.create_cards_keyboard(user.id)
+                    if keyboard:
+                        try:
+                            if user.id in game.player_cards_messages:
+                                await context.bot.delete_message(
+                                    chat_id=user.id,
+                                    message_id=game.player_cards_messages[user.id]
+                                )
+                            
+                            teammate = game.get_teammate(player)
+                            teammate_text = f"\n🤝 **یار شما:** {teammate.display_name}" if teammate else ""
+                            
+                            cards_text = "\n".join([f"{i+1}. {card.persian_name}" for i, card in enumerate(player.cards)])
+                            
+                            message = await context.bot.send_message(
+                                chat_id=user.id,
+                                text=f"🎴 **کارت‌های شما**{teammate_text}\n\n"
+                                     f"🃏 **خال حکم:** {game.trump_suit.value if game.trump_suit else ''} {game.trump_suit.persian_name if game.trump_suit else ''}\n\n"
+                                     f"{cards_text}\n\n"
+                                     f"🎯 **نوبت:** {game.get_player(game.turn_order[game.current_turn_index]).display_name}",
+                                reply_markup=keyboard
+                            )
+                            game.player_cards_messages[user.id] = message.message_id
+                        except Exception as e:
+                            logger.error(f"خطا در آپدیت کارت‌های کاربر {user.id}: {e}")
+            else:
+                await query.answer(f"❌ {error_msg}", show_alert=True)
+
+# ==================== اجرای ربات ====================
 
 def main():
-    print("🤖 ربات پاسور در حال راه‌اندازی...")
-    app = Application.builder().token(TOKEN).build()
+    print("🤖 ربات پاسور Railway در حال راه‌اندازی...")
+    print(f"📢 کانال اجباری: {REQUIRED_CHANNEL}")
+    print("✅ سیستم تایید عضویت فعال")
+    print("✅ دکمه‌های انتخاب حکم مستقیم وصل شد")
+    print("✅ دور اول ۵ کارت داده می‌شود")
     
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("newgame", newgame))
-    app.add_handler(CallbackQueryHandler(callback_handler))
+    application = Application.builder() \
+        .token(TOKEN) \
+        .connect_timeout(30.0) \
+        .read_timeout(30.0) \
+        .write_timeout(30.0) \
+        .pool_timeout(30.0) \
+        .build()
+    
+    application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("newgame", new_game_command))
+    application.add_handler(CommandHandler("verify", verify_command))
+    
+    application.add_handler(CallbackQueryHandler(callback_handler))
     
     print("✅ ربات آماده است!")
-    app.run_polling(drop_pending_updates=True)
+    
+    try:
+        application.run_polling(
+            drop_pending_updates=True,
+            allowed_updates=Update.ALL_TYPES,
+            poll_interval=0.5,
+            timeout=15,
+            close_loop=False
+        )
+    except Exception as e:
+        print(f"❌ خطا در اجرای ربات: {e}")
 
 if __name__ == "__main__":
     main()
