@@ -82,10 +82,10 @@ class Card:
     def __eq__(self, other):
         if not isinstance(other, Card):
             return False
-        return self.suit == other.suit and self.rank.value == other.rank.value
+        return self.suit == other.suit and self.rank.symbol == other.rank.symbol
 
     def __hash__(self):
-        return hash((self.suit.value, self.rank.value))
+        return hash((self.suit.value, self.rank.symbol))
 
     @property
     def persian_name(self):
@@ -154,10 +154,12 @@ class Game:
             p.position = i
 
     def _assign_teams(self):
+        """تیم‌بندی: بازیکنان روبه‌رو هم تیم هستند"""
         for i, p in enumerate(self.players):
             p.team = i % 2
 
     def get_teammate(self, player: Player) -> Optional[Player]:
+        """یار هم‌تیمی را برمی‌گرداند"""
         if player.team is None:
             return None
         for p in self.players:
@@ -172,7 +174,7 @@ class Game:
         return None
 
     def initialize_deck(self):
-        """ایجاد ۵۲ کارت منحصر به فرد و شافل"""
+        """ایجاد ۵۲ کارت منحصر به فرد"""
         self.deck = []
         for suit in [Suit.HEARTS, Suit.DIAMONDS, Suit.CLUBS, Suit.SPADES]:
             for rank in RANKS.values():
@@ -192,7 +194,7 @@ class Game:
     def deal_remaining_cards(self):
         """۸ کارت باقی مانده - هر کارت فقط یکبار"""
         for i, p in enumerate(self.players):
-            start = (i * 13) + 5
+            start = 20 + (i * 8)  # 20 کارت اول رفت، حالا از اندیس 20 شروع کن
             end = start + 8
             remaining_cards = self.deck[start:end].copy()
             p.cards = p.first_five.copy() + remaining_cards
@@ -1034,6 +1036,7 @@ def main():
     print(f"📢 کانال اجباری: {REQUIRED_CHANNEL}")
     print("✅ 52 کارت منحصر به فرد - بدون تکرار")
     print("✅ 5 کارت اول ثابت + 8 کارت بعد از حکم")
+    print("✅ تیم‌بندی درست (بازیکنان روبه‌رو)")
     print("✅ هر دست = 1 امتیاز")
     print("✅ 7 امتیاز = برنده بازی")
     print("✅ برنده دست = شروع کننده دست بعد")
