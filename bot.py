@@ -101,8 +101,7 @@ class Player:
         self.full_name = full_name
         self.cards: List[Card] = []
         self.first_five: List[Card] = []
-        self.tricks_won: int = 0  # امتیاز در دست جاری
-        self.rounds_won: int = 0  # تعداد دست‌های برده شده در کل بازی
+        self.tricks_won: int = 0
         self.verified: bool = False
         self.position: Optional[int] = None
         self.team: Optional[int] = None
@@ -137,9 +136,9 @@ class Game:
         self.player_chat_ids: Dict[int, int] = {}
         self.winner_team: Optional[int] = None
         self.first_round_dealt: bool = False
-        self.team0_rounds: int = 0  # تعداد دست‌های برده شده توسط تیم ۱
-        self.team1_rounds: int = 0  # تعداد دست‌های برده شده توسط تیم ۲
-        self.hand_number: int = 1   # شماره دست فعلی (۱ تا ۷)
+        self.team0_rounds: int = 0
+        self.team1_rounds: int = 0
+        self.hand_number: int = 1
 
     def add_player(self, player: Player) -> bool:
         if len(self.players) >= 4:
@@ -300,12 +299,10 @@ class Game:
                 # اگر تیمی به ۷ امتیاز رسید
                 if team0_score >= 7:
                     self.team0_rounds += 1
-                    # ریست برای دست بعدی
-                    self.reset_for_next_hand()
+                    self.state = "hand_finished"
                 elif team1_score >= 7:
                     self.team1_rounds += 1
-                    # ریست برای دست بعدی
-                    self.reset_for_next_hand()
+                    self.state = "hand_finished"
                 else:
                     self.rounds.append(self.current_round)
                     self.current_round = Round()
@@ -1001,9 +998,101 @@ async def private_callback_handler(update: Update, context: ContextTypes.DEFAULT
                                     next_player.user_id,
                                     f"🎯 نوبت شماست! لطفاً یک کارت بازی کنید."
                                 )
-
-            # بررسی پایان بازی نهایی
-            if game.state == "finished":
+            
+            # ===== بخش جدید: اعلام برنده دست و شروع دست بعد =====
+            if game.state == "hand_finished":
+                team0 = [p for p in game.players if p.team == 0]
+                team1 = [p for p in game.players if p.team == 1]
+                team0_names = " و ".join(p.display_name for p in team0)
+                team1_names = " و ".join(p.display_name for p in team1)
+                team0_score = sum(p.tricks_won for p in game.players if p.team == 0)
+                team1_score = sum(p.tricks_won for p in game.players if p.team == 1)
+                
+                winner_team = 0 if team0_score >= 7 else 1
+                winner_names = team0_names if winner_team == 0 else team1_names
+                winner_score = team0_score if winner_team == 0 else team1_score
+                
+                # اعلام برنده دست به همه
+                for p in game.players:
+                    await context.bot.send_message(
+                        p.user_id,
+                        f"🏆 **دست {game.hand_number} تمام شد!**\n\n"
+                        f"🎯 تیم {winner_names} با {winner_score} امتیاز این دست را برد!\n"
+                        f"📊 امتیازات کلی: تیم ۱ {game.team0_rounds} - {game.team1_rounds} تیم ۲\n\n"
+                        f"🃏 در حال آماده‌سازی دست بعدی..."
+                    )
+                
+                # بررسی پایان بازی نهایی
+                if game.team0_rounds >= 7 or game.team1_rounds >= 7:
+                    game.state = "finished"
+                    for p in game.players:
+                        if game.team0_rounds >= 7:
+                            await context.bot.send_message(
+                                p.user_id,
+                                f"🏆 **بازی تمام شد!**\n\n"
+                                f"🎯 تیم {team0_names} با {game.team0_rounds} دست به ۷ دست رسیدند!\n"
+                                f"🏅 **برنده نهایی بازی:** {team0_names}\n"
+                                f"🎉 تبریک به قهرمانان!\n\n"
+                                f"📊 **نتیجه نهایی:**\n"
+                                f"{team0_names}: {game.team0_rounds} دست\n"
+                                f"{team1_names}: {game.team1_rounds} دست"
+                            )
+                        elif game.team1_rounds >= 7:
+                            await context.bot.send_message(
+                                p.user_id,
+                                f"🏆 **بازی تمام شد!**\n\n"
+                                f"🎯 تیم {team1_names} با {game.team1_rounds} دست به ۷ دست رسیدند!\n"
+                                f"🏅 **برنده نهایی بازی:** {team1_names}\n"
+                                f"🎉 تبریک به قهرمانان!\n\n"
+                                f"📊 **نتیجه نهایی:**\n"
+                                f"{team0_names}: {game.team0_rounds} دست\n"
+                                f"{team1_names}: {game.team1_rounds} دست"
+                            )
+                        game_manager.remove_user_game(p.user_id)
+                    game_manager.delete_game(game.game_id)
+                    return
+                
+                # ریست برای دست بعدی
+                game.reset_for_next_hand()
+                
+                # ارسال کارت‌های دور اول دست جدید
+                for player in game.players:
+                    cards_text = format_cards(player.cards)
+                    teammate = game.get_teammate(player)
+                    teammate_text = f"\n🤝 یار شما: {teammate.display_name}" if teammate else ""
+                    await context.bot.send_message(
+                        player.user_id,
+                        f"🎴 **دست {game.hand_number} - کارت‌های دور اول**{teammate_text}\n\n"
+                        f"🃏 ۵ کارت اولیه\n{cards_text}\n\n"
+                        f"🏆 امتیازات کلی: تیم ۱ {game.team0_rounds} - {game.team1_rounds} تیم ۲\n\n"
+                        f"⏳ منتظر انتخاب حکم..."
+                    )
+                
+                # ارسال کیبورد انتخاب حکم به حاکم جدید
+                chooser = game.get_player(game.trump_chooser_id)
+                if chooser:
+                    keyboard = [
+                        [
+                            InlineKeyboardButton("♥️ دل", callback_data=f"trump:{game.game_id}:hearts"),
+                            InlineKeyboardButton("♦️ خشت", callback_data=f"trump:{game.game_id}:diamonds")
+                        ],
+                        [
+                            InlineKeyboardButton("♣️ گیشنیز", callback_data=f"trump:{game.game_id}:clubs"),
+                            InlineKeyboardButton("♠️ پیک", callback_data=f"trump:{game.game_id}:spades")
+                        ]
+                    ]
+                    await context.bot.send_message(
+                        chooser.user_id,
+                        f"👑 **دست {game.hand_number} - شما انتخاب کننده حکم هستید!**\n\n"
+                        f"🔢 کد بازی: {game.game_id[-6:]}\n"
+                        f"{game._teams_info()}\n"
+                        f"🏆 امتیازات کلی: تیم ۱ {game.team0_rounds} - {game.team1_rounds} تیم ۲\n"
+                        f"👇 لطفاً خال حکم را انتخاب کنید:",
+                        reply_markup=InlineKeyboardMarkup(keyboard)
+                    )
+            
+            # پایان بازی نهایی
+            elif game.state == "finished":
                 team0 = [p for p in game.players if p.team == 0]
                 team1 = [p for p in game.players if p.team == 1]
                 team0_names = " و ".join(p.display_name for p in team0)
@@ -1072,7 +1161,7 @@ async def private_chat_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 # ==================== راه‌اندازی ====================
 def main():
     print("=" * 60)
-    print("🤖 ربات پاسور - نسخه نهایی با قانون مسابقات ۷ امتیازی")
+    print("🤖 ربات پاسور - نسخه نهایی")
     print(f"📢 کانال اجباری: {REQUIRED_CHANNEL}")
     print("✅ 52 کارت منحصر به فرد - بدون تکرار")
     print("✅ 5 کارت اول ثابت + 8 کارت بعد از حکم")
@@ -1080,7 +1169,7 @@ def main():
     print("✅ هر دست = 1 مسابقه ۷ امتیازی")
     print("✅ ۷ دست = برنده نهایی بازی")
     print("✅ برنده دست = شروع کننده دست بعد")
-    print("✅ رفع مشکل هنگ کیبورد")
+    print("✅ اعلام برنده دست و شروع خودکار دست بعد")
     print("=" * 60)
 
     app = Application.builder().token(TOKEN).build()
