@@ -92,6 +92,7 @@ class Player:
         self.user_id = user_id
         self.full_name = full_name
         self.cards: List[Card] = []
+        self.first_five: List[Card] = []  # ذخیره 5 کارت اولیه
         self.tricks_won: int = 0
         self.verified: bool = False
         self.position: Optional[int] = None
@@ -126,6 +127,7 @@ class Game:
         self.created_at = datetime.now()
         self.player_chat_ids: Dict[int, int] = {}
         self.winner_team: Optional[int] = None
+        self.first_round_dealt: bool = False
 
     def add_player(self, player: Player) -> bool:
         if len(self.players) >= 4:
@@ -169,17 +171,22 @@ class Game:
         random.shuffle(self.deck)
 
     def deal_first_round(self):
+        """۵ کارت اولیه - ذخیره در first_five"""
         for i, p in enumerate(self.players):
             start = i * 5
             end = start + 5
-            p.cards = self.deck[start:end]
+            p.first_five = self.deck[start:end].copy()  # ذخیره 5 کارت اول
+            p.cards = p.first_five.copy()  # کارت‌های فعلی = 5 کارت اول
             p.cards.sort(key=lambda c: (c.suit.value, -c.rank.value))
+        self.first_round_dealt = True
 
     def deal_remaining_cards(self):
+        """۸ کارت اضافی بعد از انتخاب حکم - بدون تغییر ۵ کارت اول"""
         for i, p in enumerate(self.players):
-            start = i * 13
-            end = start + 13
-            p.cards = self.deck[start:end]
+            start = (i * 13) + 5  # از کارت ششم به بعد
+            end = start + 8
+            remaining_cards = self.deck[start:end].copy()
+            p.cards = p.first_five.copy() + remaining_cards  # 5 کارت اول + 8 کارت جدید
             p.cards.sort(key=lambda c: (c.suit.value, -c.rank.value))
 
     def start_game(self) -> bool:
@@ -200,7 +207,7 @@ class Game:
         if self.state != "choosing_trump" or user_id != self.trump_chooser_id:
             return False
         self.trump_suit = suit
-        self.deal_remaining_cards()
+        self.deal_remaining_cards()  # 8 کارت اضافه کن
         self.state = "playing"
         self.turn_order = [p.user_id for p in self.players]
         chooser_index = self.turn_order.index(user_id)
@@ -267,7 +274,7 @@ class Game:
                     self.rounds.append(self.current_round)
                     self.current_round = Round()
                     winner_index = self.turn_order.index(winner_id)
-                    self.current_turn_index = winner_index
+                    self.current_turn_index = winner_index  # برنده دور بعد را شروع می‌کند
         return True, card, None
 
     def _get_round_winner(self) -> Optional[int]:
@@ -330,8 +337,8 @@ class Game:
             team1_score = sum(p.tricks_won for p in self.players if p.team == 1)
             
             text += f"📊 امتیاز:\n"
-            text += f"• تیم {team0_names}: {team0_score} امتیاز\n"
-            text += f"• تیم {team1_names}: {team1_score} امتیاز\n"
+            text += f"• {team0_names}: {team0_score} امتیاز\n"
+            text += f"• {team1_names}: {team1_score} امتیاز\n"
             text += f"🎯 اولین تیم با ۷ امتیاز = برنده بازی\n"
             
             if self.current_round.cards_played:
@@ -350,8 +357,8 @@ class Game:
             
             text += "🏆 بازی تمام شد!\n\n"
             text += f"📊 نتیجه نهایی:\n"
-            text += f"• تیم {team0_names}: {team0_score} امتیاز\n"
-            text += f"• تیم {team1_names}: {team1_score} امتیاز\n\n"
+            text += f"• {team0_names}: {team0_score} امتیاز\n"
+            text += f"• {team1_names}: {team1_score} امتیاز\n\n"
             
             if self.winner_team == 0:
                 text += f"🏅 تیم {team0_names} با {team0_score} امتیاز برنده بازی شد!\n🎉"
@@ -796,7 +803,7 @@ async def private_callback_handler(update: Update, context: ContextTypes.DEFAULT
         if game.choose_trump(user.id, suit):
             await query.edit_message_text(
                 f"✅ حکم انتخاب شد: {suit.value} {suit.persian_name}\n"
-                f"🃏 بقیه کارت‌ها در حال ارسال...",
+                f"🃏 ۸ کارت جدید اضافه شد...",
                 reply_markup=None
             )
             await query.answer(f"✅ حکم: {suit.value} {suit.persian_name}", show_alert=True)
@@ -818,7 +825,7 @@ async def private_callback_handler(update: Update, context: ContextTypes.DEFAULT
 
                 msg = await context.bot.send_message(
                     player.user_id,
-                    f"🎴 کارت‌های کامل شما{teammate_text}\n\n"
+                    f"🎴 **کارت‌های شما (۵ کارت اول + ۸ کارت جدید)**{teammate_text}\n\n"
                     f"🃏 حکم: {suit.value} {suit.persian_name}\n"
                     f"{cards_text}\n\n"
                     f"🎯 نوبت: {game.get_player(game.turn_order[game.current_turn_index]).display_name}",
@@ -907,11 +914,10 @@ async def private_callback_handler(update: Update, context: ContextTypes.DEFAULT
                     for p in game.players:
                         await context.bot.send_message(
                             p.user_id,
-                            f"🏆 **برنده این دست:** {winner.display_name}\n"
-                            f"✅ {winner.display_name} این دست را برد!\n\n"
-                            f"📊 امتیازات:\n"
-                            f"• تیم {team0_names}: {team0_score} امتیاز\n"
-                            f"• تیم {team1_names}: {team1_score} امتیاز\n"
+                            f"🏆 **{winner.display_name} این دست را برد!**\n\n"
+                            f"📊 **امتیازات:**\n"
+                            f"• {team0_names}: {team0_score} امتیاز\n"
+                            f"• {team1_names}: {team1_score} امتیاز\n"
                             f"🎯 اولین تیم با ۷ امتیاز = برنده بازی"
                         )
                         
@@ -920,7 +926,7 @@ async def private_callback_handler(update: Update, context: ContextTypes.DEFAULT
                             if next_player:
                                 await context.bot.send_message(
                                     p.user_id,
-                                    f"🎯 نوبت بعدی: {next_player.display_name}"
+                                    f"🎯 **نوبت بعدی:** {next_player.display_name} (برنده دست قبل)"
                                 )
             else:
                 if game.state == "playing":
@@ -930,12 +936,12 @@ async def private_callback_handler(update: Update, context: ContextTypes.DEFAULT
                             if p.user_id != next_player.user_id:
                                 await context.bot.send_message(
                                     p.user_id,
-                                    f"🎯 نوبت: {next_player.display_name}"
+                                    f"🎯 **نوبت:** {next_player.display_name}"
                                 )
                             else:
                                 await context.bot.send_message(
                                     next_player.user_id,
-                                    f"🎯 نوبت شماست! لطفاً یک کارت بازی کنید."
+                                    f"🎯 **نوبت شماست!** لطفاً یک کارت بازی کنید."
                                 )
 
             if game.state == "finished":
@@ -951,23 +957,23 @@ async def private_callback_handler(update: Update, context: ContextTypes.DEFAULT
                         await context.bot.send_message(
                             p.user_id,
                             f"🏆 **بازی تمام شد!**\n\n"
-                            f"🎯 تیم {team0_names} با {team0_score} امتیاز به ۷ امتیاز رسید!\n"
-                            f"🏅 **برنده بازی:** تیم {team0_names}\n"
+                            f"🎯 **{team0_names}** با {team0_score} امتیاز به ۷ امتیاز رسیدند!\n"
+                            f"🏅 **برنده بازی:** {team0_names}\n"
                             f"🎉 تبریک به تیم برنده!\n\n"
-                            f"📊 نتیجه نهایی:\n"
-                            f"تیم {team0_names}: {team0_score} امتیاز\n"
-                            f"تیم {team1_names}: {team1_score} امتیاز"
+                            f"📊 **نتیجه نهایی:**\n"
+                            f"{team0_names}: {team0_score} امتیاز\n"
+                            f"{team1_names}: {team1_score} امتیاز"
                         )
                     elif game.winner_team == 1:
                         await context.bot.send_message(
                             p.user_id,
                             f"🏆 **بازی تمام شد!**\n\n"
-                            f"🎯 تیم {team1_names} با {team1_score} امتیاز به ۷ امتیاز رسید!\n"
-                            f"🏅 **برنده بازی:** تیم {team1_names}\n"
+                            f"🎯 **{team1_names}** با {team1_score} امتیاز به ۷ امتیاز رسیدند!\n"
+                            f"🏅 **برنده بازی:** {team1_names}\n"
                             f"🎉 تبریک به تیم برنده!\n\n"
-                            f"📊 نتیجه نهایی:\n"
-                            f"تیم {team0_names}: {team0_score} امتیاز\n"
-                            f"تیم {team1_names}: {team1_score} امتیاز"
+                            f"📊 **نتیجه نهایی:**\n"
+                            f"{team0_names}: {team0_score} امتیاز\n"
+                            f"{team1_names}: {team1_score} امتیاز"
                         )
                     game_manager.remove_user_game(p.user_id)
                 game_manager.delete_game(game.game_id)
@@ -1010,8 +1016,10 @@ def main():
     print("=" * 60)
     print("🤖 ربات پاسور - نسخه نهایی")
     print(f"📢 کانال اجباری: {REQUIRED_CHANNEL}")
+    print("✅ 5 کارت اول ثابت می‌ماند + 8 کارت بعد از حکم")
     print("✅ هر دست = 1 امتیاز")
     print("✅ 7 امتیاز = برنده بازی")
+    print("✅ برنده دست = شروع کننده دست بعد")
     print("=" * 60)
 
     app = Application.builder().token(TOKEN).build()
