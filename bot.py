@@ -92,7 +92,7 @@ class Player:
         self.user_id = user_id
         self.full_name = full_name
         self.cards: List[Card] = []
-        self.first_five: List[Card] = []  # ذخیره 5 کارت اولیه
+        self.first_five: List[Card] = []
         self.tricks_won: int = 0
         self.verified: bool = False
         self.position: Optional[int] = None
@@ -171,22 +171,20 @@ class Game:
         random.shuffle(self.deck)
 
     def deal_first_round(self):
-        """۵ کارت اولیه - ذخیره در first_five"""
         for i, p in enumerate(self.players):
             start = i * 5
             end = start + 5
-            p.first_five = self.deck[start:end].copy()  # ذخیره 5 کارت اول
-            p.cards = p.first_five.copy()  # کارت‌های فعلی = 5 کارت اول
+            p.first_five = self.deck[start:end].copy()
+            p.cards = p.first_five.copy()
             p.cards.sort(key=lambda c: (c.suit.value, -c.rank.value))
         self.first_round_dealt = True
 
     def deal_remaining_cards(self):
-        """۸ کارت اضافی بعد از انتخاب حکم - بدون تغییر ۵ کارت اول"""
         for i, p in enumerate(self.players):
-            start = (i * 13) + 5  # از کارت ششم به بعد
+            start = (i * 13) + 5
             end = start + 8
             remaining_cards = self.deck[start:end].copy()
-            p.cards = p.first_five.copy() + remaining_cards  # 5 کارت اول + 8 کارت جدید
+            p.cards = p.first_five.copy() + remaining_cards
             p.cards.sort(key=lambda c: (c.suit.value, -c.rank.value))
 
     def start_game(self) -> bool:
@@ -207,7 +205,7 @@ class Game:
         if self.state != "choosing_trump" or user_id != self.trump_chooser_id:
             return False
         self.trump_suit = suit
-        self.deal_remaining_cards()  # 8 کارت اضافه کن
+        self.deal_remaining_cards()
         self.state = "playing"
         self.turn_order = [p.user_id for p in self.players]
         chooser_index = self.turn_order.index(user_id)
@@ -274,7 +272,7 @@ class Game:
                     self.rounds.append(self.current_round)
                     self.current_round = Round()
                     winner_index = self.turn_order.index(winner_id)
-                    self.current_turn_index = winner_index  # برنده دور بعد را شروع می‌کند
+                    self.current_turn_index = winner_index
         return True, card, None
 
     def _get_round_winner(self) -> Optional[int]:
@@ -901,7 +899,8 @@ async def private_callback_handler(update: Update, context: ContextTypes.DEFAULT
                 )
                 game.player_chat_ids[user.id] = msg.message_id
 
-                        if len(game.current_round.cards_played) == 0 and game.current_round.winner_id:
+            # ========== فقط این بخش تغییر کرده ==========
+            if len(game.current_round.cards_played) == 0 and game.current_round.winner_id:
                 winner = game.get_player(game.current_round.winner_id)
                 if winner:
                     team0 = [p for p in game.players if p.team == 0]
@@ -935,6 +934,22 @@ async def private_callback_handler(update: Update, context: ContextTypes.DEFAULT
                                         next_player.user_id,
                                         f"🎯 نوبت شماست! لطفاً یک کارت بازی کنید."
                                     )
+            # ==============================================
+            else:
+                if game.state == "playing":
+                    next_player = game.get_player(game.turn_order[game.current_turn_index])
+                    if next_player:
+                        for p in game.players:
+                            if p.user_id != next_player.user_id:
+                                await context.bot.send_message(
+                                    p.user_id,
+                                    f"🎯 نوبت: {next_player.display_name}"
+                                )
+                            else:
+                                await context.bot.send_message(
+                                    next_player.user_id,
+                                    f"🎯 نوبت شماست! لطفاً یک کارت بازی کنید."
+                                )
 
             if game.state == "finished":
                 team0 = [p for p in game.players if p.team == 0]
@@ -1008,7 +1023,7 @@ def main():
     print("=" * 60)
     print("🤖 ربات پاسور - نسخه نهایی")
     print(f"📢 کانال اجباری: {REQUIRED_CHANNEL}")
-    print("✅ 5 کارت اول ثابت می‌ماند + 8 کارت بعد از حکم")
+    print("✅ 5 کارت اول ثابت + 8 کارت بعد از حکم")
     print("✅ هر دست = 1 امتیاز")
     print("✅ 7 امتیاز = برنده بازی")
     print("✅ برنده دست = شروع کننده دست بعد")
