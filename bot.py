@@ -901,7 +901,7 @@ async def private_callback_handler(update: Update, context: ContextTypes.DEFAULT
                 )
                 game.player_chat_ids[user.id] = msg.message_id
 
-            if len(game.current_round.cards_played) == 0 and game.current_round.winner_id:
+                        if len(game.current_round.cards_played) == 0 and game.current_round.winner_id:
                 winner = game.get_player(game.current_round.winner_id)
                 if winner:
                     team0 = [p for p in game.players if p.team == 0]
@@ -914,35 +914,27 @@ async def private_callback_handler(update: Update, context: ContextTypes.DEFAULT
                     for p in game.players:
                         await context.bot.send_message(
                             p.user_id,
-                            f"🏆 **{winner.display_name} این دست را برد!**\n\n"
-                            f"📊 **امتیازات:**\n"
-                            f"• {team0_names}: {team0_score} امتیاز\n"
-                            f"• {team1_names}: {team1_score} امتیاز\n"
+                            f"🏆 برنده این دست: {winner.display_name}\n\n"
+                            f"📊 امتیازات:\n"
+                            f"• {team0_names}: {team0_score}\n"
+                            f"• {team1_names}: {team1_score}\n"
                             f"🎯 اولین تیم با ۷ امتیاز = برنده بازی"
                         )
                         
-                        if game.state == "playing":
-                            next_player = game.get_player(game.turn_order[game.current_turn_index])
-                            if next_player:
-                                await context.bot.send_message(
-                                    p.user_id,
-                                    f"🎯 **نوبت بعدی:** {next_player.display_name} (برنده دست قبل)"
-                                )
-            else:
-                if game.state == "playing":
-                    next_player = game.get_player(game.turn_order[game.current_turn_index])
-                    if next_player:
-                        for p in game.players:
-                            if p.user_id != next_player.user_id:
-                                await context.bot.send_message(
-                                    p.user_id,
-                                    f"🎯 **نوبت:** {next_player.display_name}"
-                                )
-                            else:
-                                await context.bot.send_message(
-                                    next_player.user_id,
-                                    f"🎯 **نوبت شماست!** لطفاً یک کارت بازی کنید."
-                                )
+                    if game.state == "playing":
+                        next_player = game.get_player(game.turn_order[game.current_turn_index])
+                        if next_player:
+                            for p in game.players:
+                                if p.user_id != next_player.user_id:
+                                    await context.bot.send_message(
+                                        p.user_id,
+                                        f"🎯 نوبت: {next_player.display_name}"
+                                    )
+                                else:
+                                    await context.bot.send_message(
+                                        next_player.user_id,
+                                        f"🎯 نوبت شماست! لطفاً یک کارت بازی کنید."
+                                    )
 
             if game.state == "finished":
                 team0 = [p for p in game.players if p.team == 0]
