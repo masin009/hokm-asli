@@ -90,7 +90,7 @@ class Card:
 class Player:
     def __init__(self, user_id: int, full_name: str):
         self.user_id = user_id
-        self.full_name = full_name  # اسم کامل از تلگرام
+        self.full_name = full_name
         self.cards: List[Card] = []
         self.tricks_won: int = 0
         self.verified: bool = False
@@ -318,13 +318,21 @@ class Game:
             
         elif self.state == "playing":
             current = self.get_player(self.turn_order[self.current_turn_index])
-            text += f"🎮 دور: {len(self.rounds)+1} (اولین تیم با ۷ امتیاز)\n"
+            text += f"🎮 دور: {len(self.rounds)+1}\n"
             text += f"🃏 حکم: {self.trump_suit.value} {self.trump_suit.persian_name}\n"
             text += f"🎯 نوبت: {current.display_name if current else '?'}\n\n"
             
-            team0 = sum(p.tricks_won for p in self.players if p.team == 0)
-            team1 = sum(p.tricks_won for p in self.players if p.team == 1)
-            text += f"📊 امتیازات:\n• تیم ۱: {team0}\n• تیم ۲: {team1}\n"
+            team0 = [p for p in self.players if p.team == 0]
+            team1 = [p for p in self.players if p.team == 1]
+            team0_names = " و ".join(p.display_name for p in team0)
+            team1_names = " و ".join(p.display_name for p in team1)
+            team0_score = sum(p.tricks_won for p in self.players if p.team == 0)
+            team1_score = sum(p.tricks_won for p in self.players if p.team == 1)
+            
+            text += f"📊 امتیازات این دست:\n"
+            text += f"• تیم {team0_names}: {team0_score} راند\n"
+            text += f"• تیم {team1_names}: {team1_score} راند\n"
+            text += f"🎯 اولین تیم با ۷ راند برنده دست می‌شود\n"
             
             if self.current_round.cards_played:
                 text += "\n🎴 کارت‌های این دور:\n"
@@ -333,19 +341,22 @@ class Game:
                     text += f"• {player.display_name if player else '?'}: {card}\n"
                     
         elif self.state == "finished":
-            team0 = sum(p.tricks_won for p in self.players if p.team == 0)
-            team1 = sum(p.tricks_won for p in self.players if p.team == 1)
+            team0 = [p for p in self.players if p.team == 0]
+            team1 = [p for p in self.players if p.team == 1]
+            team0_names = " و ".join(p.display_name for p in team0)
+            team1_names = " و ".join(p.display_name for p in team1)
+            team0_score = sum(p.tricks_won for p in self.players if p.team == 0)
+            team1_score = sum(p.tricks_won for p in self.players if p.team == 1)
+            
             text += "🏆 بازی تمام شد!\n\n"
-            text += f"🎯 تیم ۱: {team0} امتیاز\n🎯 تیم ۲: {team1} امتیاز\n\n"
+            text += f"📊 نتیجه نهایی:\n"
+            text += f"• تیم {team0_names}: {team0_score} راند\n"
+            text += f"• تیم {team1_names}: {team1_score} راند\n\n"
             
             if self.winner_team == 0:
-                winners = [p for p in self.players if p.team == 0]
-                names = " و ".join(p.display_name for p in winners)
-                text += f"🏅 برنده: تیم ۱\n{names} 🎉"
+                text += f"🏅 تیم {team0_names} با {team0_score} راند برنده این دست شد!\n🎉"
             elif self.winner_team == 1:
-                winners = [p for p in self.players if p.team == 1]
-                names = " و ".join(p.display_name for p in winners)
-                text += f"🏅 برنده: تیم ۲\n{names} 🎉"
+                text += f"🏅 تیم {team1_names} با {team1_score} راند برنده این دست شد!\n🎉"
                 
         return text
 
@@ -440,7 +451,6 @@ def make_cards_keyboard(game_id: str, cards: List[Card]) -> Optional[InlineKeybo
     return InlineKeyboardMarkup(keyboard) if keyboard else None
 
 def get_user_full_name(user) -> str:
-    """دریافت اسم کامل از تلگرام"""
     if user.username:
         return f"@{user.username}"
     elif user.first_name and user.last_name:
@@ -499,7 +509,6 @@ async def private_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if game.add_player(player):
             game_manager.set_user_game(user.id, game.game_id)
             
-            # اعلام پیوستن به همه
             for p in game.players:
                 if p.user_id != user.id:
                     try:
@@ -717,7 +726,6 @@ async def private_callback_handler(update: Update, context: ContextTypes.DEFAULT
             if game.add_player(player):
                 game_manager.set_user_game(user.id, game.game_id)
                 
-                # اعلام پیوستن به همه
                 for p in game.players:
                     if p.user_id != user.id:
                         try:
@@ -899,11 +907,12 @@ async def private_callback_handler(update: Update, context: ContextTypes.DEFAULT
                     for p in game.players:
                         await context.bot.send_message(
                             p.user_id,
-                            f"🏆 برنده دور: {winner.display_name}\n"
-                            f"✅ دست برده شد!\n"
-                            f"📊 امتیازات:\n"
-                            f"تیم {team0_names}: {team0_score}\n"
-                            f"تیم {team1_names}: {team1_score}"
+                            f"🏆 برنده این راند: {winner.display_name}\n"
+                            f"✅ {winner.display_name} این راند را برد!\n\n"
+                            f"📊 امتیازات راندها:\n"
+                            f"• تیم {team0_names}: {team0_score} راند\n"
+                            f"• تیم {team1_names}: {team1_score} راند\n"
+                            f"🎯 اولین تیم با ۷ راند، برنده این دست می‌شود"
                         )
                         
                         if game.state == "playing":
@@ -941,14 +950,24 @@ async def private_callback_handler(update: Update, context: ContextTypes.DEFAULT
                     if game.winner_team == 0:
                         await context.bot.send_message(
                             p.user_id,
-                            f"🏆 تیم {team0_names} با {team0_score} امتیاز برنده شد!\n"
-                            f"🎉 تبریک به تیم برنده!"
+                            f"🏆 **بازی تمام شد!**\n\n"
+                            f"🎯 تیم {team0_names} با {team0_score} راند به ۷ راند رسید!\n"
+                            f"🏅 تیم {team0_names} برنده این دست شد!\n"
+                            f"🎉 تبریک به تیم برنده!\n\n"
+                            f"📊 نتیجه نهایی:\n"
+                            f"تیم {team0_names}: {team0_score} راند\n"
+                            f"تیم {team1_names}: {team1_score} راند"
                         )
                     elif game.winner_team == 1:
                         await context.bot.send_message(
                             p.user_id,
-                            f"🏆 تیم {team1_names} با {team1_score} امتیاز برنده شد!\n"
-                            f"🎉 تبریک به تیم برنده!"
+                            f"🏆 **بازی تمام شد!**\n\n"
+                            f"🎯 تیم {team1_names} با {team1_score} راند به ۷ راند رسید!\n"
+                            f"🏅 تیم {team1_names} برنده این دست شد!\n"
+                            f"🎉 تبریک به تیم برنده!\n\n"
+                            f"📊 نتیجه نهایی:\n"
+                            f"تیم {team0_names}: {team0_score} راند\n"
+                            f"تیم {team1_names}: {team1_score} راند"
                         )
                     game_manager.remove_user_game(p.user_id)
                 game_manager.delete_game(game.game_id)
@@ -974,10 +993,8 @@ async def private_chat_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     full_name = player.display_name
     message_text = update.message.text
     
-    # ارسال برای خودش
     await update.message.reply_text(f"💬 {full_name}: {message_text}")
     
-    # ارسال برای دیگران
     for other in game.players:
         if other.user_id != user.id:
             try:
@@ -993,11 +1010,9 @@ def main():
     print("=" * 60)
     print("🤖 ربات پاسور - نسخه نهایی")
     print(f"📢 کانال اجباری: {REQUIRED_CHANNEL}")
-    print("✅ استفاده از اسم اکانت تلگرام")
-    print("✅ اعلام پیوستن بازیکنان")
-    print("✅ اعلام امتیازات تیمی با اسم")
-    print("✅ پیغام ظرفیت تکمیل نشده")
-    print("✅ چت قبل از شروع بازی")
+    print("✅ امتیازات به صورت راند به راند")
+    print("✅ نمایش دقیق تیم‌ها و امتیازات")
+    print("✅ اولین تیم با ۷ راند = برنده دست")
     print("=" * 60)
 
     app = Application.builder().token(TOKEN).build()
