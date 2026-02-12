@@ -489,7 +489,6 @@ async def private_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         me = await context.bot.get_me()
         BOT_USERNAME = me.username
 
-    # ===== لینک دعوت =====
     if args and args[0].startswith("join_"):
         game_id = args[0][5:]
         game = game_manager.get_game(game_id)
@@ -507,7 +506,6 @@ async def private_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         nickname = nickname_db.get(user.id)
         
-        # اگر نام ندارد، اول بگیر
         if not nickname:
             context.user_data['pending_join'] = game_id
             await update.message.reply_text(
@@ -517,7 +515,6 @@ async def private_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data['awaiting_nickname'] = True
             return
 
-        # نام دارد، عضویت رو چک کن
         is_member, msg = await check_membership(context, user.id)
         if not is_member:
             channel = REQUIRED_CHANNEL.lstrip('@')
@@ -532,7 +529,6 @@ async def private_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        # همه چی اوکی، اضافه کن
         player = Player(user.id, nickname)
         player.verified = True
         if game.add_player(player):
@@ -554,7 +550,6 @@ async def private_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ خطا در پیوستن به بازی!")
         return
 
-    # ===== استارت عادی =====
     nickname = nickname_db.get(user.id)
     if not nickname:
         await update.message.reply_text(
@@ -808,7 +803,6 @@ async def private_callback_handler(update: Update, context: ContextTypes.DEFAULT
     user = query.from_user
     data = query.data
 
-    # ===== بررسی مجدد عضویت =====
     if data.startswith("verify:"):
         game_id = data[7:]
         game = game_manager.get_game(game_id)
@@ -816,15 +810,16 @@ async def private_callback_handler(update: Update, context: ContextTypes.DEFAULT
             await query.edit_message_text("❌ بازی یافت نشد.")
             return
 
-        if 'pending_verify' not in context.user_data:
-            nickname = nickname_db.get(user.id)
-            if not nickname:
-                await query.edit_message_text("❌ لطفاً ابتدا با /start یک نام انتخاب کنید.")
-                return
-        else:
+        nickname = None
+        if 'pending_verify' in context.user_data:
             stored_gid, nickname = context.user_data['pending_verify']
             if stored_gid != game_id:
                 await query.edit_message_text("❌ اطلاعات ناهمخوان است.")
+                return
+        else:
+            nickname = nickname_db.get(user.id)
+            if not nickname:
+                await query.edit_message_text("❌ لطفاً ابتدا با /start یک نام انتخاب کنید.")
                 return
 
         is_member, _ = await check_membership(context, user.id)
@@ -838,7 +833,8 @@ async def private_callback_handler(update: Update, context: ContextTypes.DEFAULT
                     f"🎮 به بازی کد `{game.game_id[-6:]}` پیوستید.\n"
                     f"👥 بازیکنان: {len(game.players)}/4"
                 )
-                context.user_data.pop('pending_verify', None)
+                if 'pending_verify' in context.user_data:
+                    context.user_data.pop('pending_verify')
                 if len(game.players) == 4:
                     creator = game.get_player(game.creator_id)
                     if creator:
@@ -860,7 +856,6 @@ async def private_callback_handler(update: Update, context: ContextTypes.DEFAULT
                 reply_markup=InlineKeyboardMarkup(keyboard)
             )
 
-    # ===== انتخاب حکم =====
     elif data.startswith("trump:"):
         parts = data.split(":")
         if len(parts) != 3:
@@ -925,7 +920,6 @@ async def private_callback_handler(update: Update, context: ContextTypes.DEFAULT
         else:
             await query.answer("❌ خطا در انتخاب حکم!", show_alert=True)
 
-    # ===== بازی کارت =====
     elif data.startswith("play:"):
         parts = data.split(":")
         if len(parts) != 3:
@@ -951,6 +945,13 @@ async def private_callback_handler(update: Update, context: ContextTypes.DEFAULT
 
             player = game.get_player(user.id)
             if player:
+                # نمایش کارت انتخاب شده برای خودش
+                await context.bot.send_message(
+                    user.id,
+                    f"✅ شما کارت **{card}** را بازی کردید."
+                )
+                
+                # اعلام به بقیه
                 for other in game.players:
                     if other.user_id != user.id:
                         try:
@@ -997,8 +998,25 @@ async def private_callback_handler(update: Update, context: ContextTypes.DEFAULT
                             p.user_id,
                             f"🏆 **برنده دور:** {winner.display_name}\n"
                             f"✅ دست برده شد!\n"
-                            f"📊 **امتیازات:** تیم ۱ {team0} - {team1} تیم ۲"
+                            f"📊 **امتیازات:** تیم ۱ {team0} - {team1} تیم ۲\n\n"
+                            f"🎯 **نوبت بعدی:** {game.get_player(game.turn_order[game.current_turn_index]).display_name}"
                         )
+            else:
+                # اعلام نوبت بعدی
+                if game.state == "playing":
+                    next_player = game.get_player(game.turn_order[game.current_turn_index])
+                    if next_player:
+                        for p in game.players:
+                            if p.user_id != next_player.user_id:
+                                await context.bot.send_message(
+                                    p.user_id,
+                                    f"🎯 **نوبت:** {next_player.display_name}"
+                                )
+                            else:
+                                await context.bot.send_message(
+                                    next_player.user_id,
+                                    f"🎯 **نوبت شماست!** لطفاً یک کارت بازی کنید."
+                                )
 
             if game.state == "finished":
                 for p in game.players:
@@ -1050,12 +1068,13 @@ def main():
     print("✅ نمایش کارت با ایموجی (A♠)")
     print("✅ نام دائمی در nicknames.json")
     print("✅ لینک دعوت")
-    print("✅ چت درون‌بازی")
+    print("✅ رفع مشکل بررسی مجدد عضویت")
+    print("✅ نمایش کارت انتخاب شده برای خودش")
+    print("✅ اعلام نوبت بعدی برای همه")
     print("=" * 60)
 
     app = Application.builder().token(TOKEN).build()
 
-    # دستورات
     app.add_handler(CommandHandler("start", private_start))
     app.add_handler(CommandHandler("newgame", newgame_command))
     app.add_handler(CommandHandler("mygame", mygame_command))
@@ -1064,25 +1083,21 @@ def main():
     app.add_handler(CommandHandler("leave", leave_command))
     app.add_handler(CommandHandler("close", close_command))
 
-    # دریافت نام
     app.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE,
         handle_nickname_input
     ), group=0)
     
-    # تغییر نام
     app.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE,
         handle_nickname_change
     ), group=1)
     
-    # چت درون‌بازی
     app.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE,
         private_chat_handler
     ), group=2)
 
-    # کالبک‌ها
     app.add_handler(CallbackQueryHandler(private_callback_handler))
 
     print("✅ ربات آماده است!")
