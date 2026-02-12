@@ -101,7 +101,8 @@ class Player:
         self.full_name = full_name
         self.cards: List[Card] = []
         self.first_five: List[Card] = []
-        self.tricks_won: int = 0
+        self.tricks_won: int = 0  # امتیاز در دست جاری
+        self.rounds_won: int = 0  # تعداد دست‌های برده شده در کل بازی
         self.verified: bool = False
         self.position: Optional[int] = None
         self.team: Optional[int] = None
@@ -136,6 +137,9 @@ class Game:
         self.player_chat_ids: Dict[int, int] = {}
         self.winner_team: Optional[int] = None
         self.first_round_dealt: bool = False
+        self.team0_rounds: int = 0  # تعداد دست‌های برده شده توسط تیم ۱
+        self.team1_rounds: int = 0  # تعداد دست‌های برده شده توسط تیم ۲
+        self.hand_number: int = 1   # شماره دست فعلی (۱ تا ۷)
 
     def add_player(self, player: Player) -> bool:
         if len(self.players) >= 4:
@@ -230,6 +234,29 @@ class Game:
         has_leading = any(c.suit == leading_suit for c in player.cards)
         return not has_leading
 
+    def reset_for_next_hand(self):
+        """ریست کردن برای دست بعدی"""
+        for p in self.players:
+            p.cards = []
+            p.first_five = []
+            p.tricks_won = 0
+        self.current_round = Round()
+        self.rounds = []
+        self.turn_order = []
+        self.current_turn_index = 0
+        self.trump_suit = None
+        self.trump_chooser_id = None
+        self.state = "choosing_trump"
+        self.first_round_dealt = False
+        self.deck = []
+        self.initialize_deck()
+        self.deal_first_round()
+        self.turn_order = [p.user_id for p in self.players]
+        random.shuffle(self.turn_order)
+        self.current_turn_index = 0
+        self.trump_chooser_id = self.turn_order[0]
+        self.hand_number += 1
+
     def play_card(self, user_id: int, card_index: int) -> Tuple[bool, Optional[Card], Optional[str]]:
         if self.state != "playing":
             return False, None, "❌ بازی در حال اجرا نیست"
@@ -267,15 +294,18 @@ class Game:
             if winner:
                 winner.tricks_won += 1
                 
-                team0 = sum(p.tricks_won for p in self.players if p.team == 0)
-                team1 = sum(p.tricks_won for p in self.players if p.team == 1)
+                team0_score = sum(p.tricks_won for p in self.players if p.team == 0)
+                team1_score = sum(p.tricks_won for p in self.players if p.team == 1)
                 
-                if team0 >= 7:
-                    self.winner_team = 0
-                    self.state = "finished"
-                elif team1 >= 7:
-                    self.winner_team = 1
-                    self.state = "finished"
+                # اگر تیمی به ۷ امتیاز رسید
+                if team0_score >= 7:
+                    self.team0_rounds += 1
+                    # ریست برای دست بعدی
+                    self.reset_for_next_hand()
+                elif team1_score >= 7:
+                    self.team1_rounds += 1
+                    # ریست برای دست بعدی
+                    self.reset_for_next_hand()
                 else:
                     self.rounds.append(self.current_round)
                     self.current_round = Round()
@@ -327,12 +357,23 @@ class Game:
             text += "👑 انتخاب حکم\n\n"
             text += self._teams_info()
             text += f"\n🎯 انتخاب کننده: {chooser.display_name if chooser else '?'}\n"
-            text += "📊 دور اول: ۵ کارت\n\n📍 لطفاً در پیوی ربات حکم را انتخاب کنید..."
+            text += f"📊 دست: {self.hand_number} از ۷\n"
+            text += f"🏆 امتیازات کلی:\n"
+            
+            team0 = [p for p in self.players if p.team == 0]
+            team1 = [p for p in self.players if p.team == 1]
+            team0_names = " و ".join(p.display_name for p in team0)
+            team1_names = " و ".join(p.display_name for p in team1)
+            
+            text += f"• {team0_names}: {self.team0_rounds} دست\n"
+            text += f"• {team1_names}: {self.team1_rounds} دست\n"
+            text += f"🎯 اولین تیم با ۷ دست = برنده نهایی\n\n"
+            text += "📍 لطفاً در پیوی ربات حکم را انتخاب کنید..."
             
         elif self.state == "playing":
             current = self.get_player(self.turn_order[self.current_turn_index])
-            text += f"🎮 دست: {len(self.rounds)+1} از ۱۳\n"
-            text += f"🃏 حکم: {self.trump_suit.value} {self.trump_suit.persian_name}\n"
+            text += f"🎮 دست: {self.hand_number} از ۷\n"
+            text += f"🃏 حکم این دست: {self.trump_suit.value} {self.trump_suit.persian_name}\n"
             text += f"🎯 نوبت: {current.display_name if current else '?'}\n\n"
             
             team0 = [p for p in self.players if p.team == 0]
@@ -342,10 +383,14 @@ class Game:
             team0_score = sum(p.tricks_won for p in self.players if p.team == 0)
             team1_score = sum(p.tricks_won for p in self.players if p.team == 1)
             
-            text += f"📊 امتیاز:\n"
+            text += f"📊 امتیاز این دست:\n"
             text += f"• {team0_names}: {team0_score} امتیاز\n"
             text += f"• {team1_names}: {team1_score} امتیاز\n"
-            text += f"🎯 اولین تیم با ۷ امتیاز = برنده بازی\n"
+            text += f"🎯 اولین تیم با ۷ امتیاز = برنده این دست\n\n"
+            text += f"🏆 امتیازات کلی:\n"
+            text += f"• {team0_names}: {self.team0_rounds} دست\n"
+            text += f"• {team1_names}: {self.team1_rounds} دست\n"
+            text += f"🎯 اولین تیم با ۷ دست = برنده نهایی\n"
             
             if self.current_round.cards_played:
                 text += "\n🎴 کارت‌های این دور:\n"
@@ -358,18 +403,16 @@ class Game:
             team1 = [p for p in self.players if p.team == 1]
             team0_names = " و ".join(p.display_name for p in team0)
             team1_names = " و ".join(p.display_name for p in team1)
-            team0_score = sum(p.tricks_won for p in self.players if p.team == 0)
-            team1_score = sum(p.tricks_won for p in self.players if p.team == 1)
             
-            text += "🏆 بازی تمام شد!\n\n"
+            text += "🏆 **بازی تمام شد!**\n\n"
             text += f"📊 نتیجه نهایی:\n"
-            text += f"• {team0_names}: {team0_score} امتیاز\n"
-            text += f"• {team1_names}: {team1_score} امتیاز\n\n"
+            text += f"• {team0_names}: {self.team0_rounds} دست\n"
+            text += f"• {team1_names}: {self.team1_rounds} دست\n\n"
             
-            if self.winner_team == 0:
-                text += f"🏅 تیم {team0_names} با {team0_score} امتیاز برنده بازی شد!\n🎉"
-            elif self.winner_team == 1:
-                text += f"🏅 تیم {team1_names} با {team1_score} امتیاز برنده بازی شد!\n🎉"
+            if self.team0_rounds >= 7:
+                text += f"🏅 تیم {team0_names} با ۷ دست برنده نهایی بازی شد!\n🎉"
+            elif self.team1_rounds >= 7:
+                text += f"🏅 تیم {team1_names} با ۷ دست برنده نهایی بازی شد!\n🎉"
                 
         return text
 
@@ -664,6 +707,7 @@ async def startgame_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"👑 شما انتخاب کننده حکم هستید!\n\n"
                 f"🔢 کد بازی: {game.game_id[-6:]}\n"
                 f"{game._teams_info()}\n"
+                f"🏆 امتیازات کلی: تیم ۱ {game.team0_rounds} - {game.team1_rounds} تیم ۲\n"
                 f"👇 لطفاً خال حکم را انتخاب کنید:",
                 reply_markup=InlineKeyboardMarkup(keyboard)
             )
@@ -808,8 +852,9 @@ async def private_callback_handler(update: Update, context: ContextTypes.DEFAULT
 
         if game.choose_trump(user.id, suit):
             await query.edit_message_text(
-                f"✅ حکم انتخاب شد: {suit.value} {suit.persian_name}\n"
-                f"🃏 ۸ کارت جدید اضافه شد...",
+                f"✅ حکم این دست انتخاب شد: {suit.value} {suit.persian_name}\n"
+                f"🃏 ۸ کارت جدید اضافه شد...\n\n"
+                f"🏆 امتیازات کلی: تیم ۱ {game.team0_rounds} - {game.team1_rounds} تیم ۲",
                 reply_markup=None
             )
             await query.answer(f"✅ حکم: {suit.value} {suit.persian_name}", show_alert=True)
@@ -832,8 +877,9 @@ async def private_callback_handler(update: Update, context: ContextTypes.DEFAULT
                 msg = await context.bot.send_message(
                     player.user_id,
                     f"🎴 **کارت‌های شما (۵ کارت اول + ۸ کارت جدید)**{teammate_text}\n\n"
-                    f"🃏 حکم: {suit.value} {suit.persian_name}\n"
+                    f"🃏 حکم این دست: {suit.value} {suit.persian_name}\n"
                     f"{cards_text}\n\n"
+                    f"🏆 امتیازات کلی: تیم ۱ {game.team0_rounds} - {game.team1_rounds} تیم ۲\n\n"
                     f"🎯 نوبت: {game.get_player(game.turn_order[game.current_turn_index]).display_name}",
                     reply_markup=keyboard
                 )
@@ -841,7 +887,7 @@ async def private_callback_handler(update: Update, context: ContextTypes.DEFAULT
         else:
             await query.answer("❌ خطا در انتخاب حکم!", show_alert=True)
 
-    # ========== بخش اصلاح شده برای رفع مشکل هنگ کیبورد ==========
+    # ========== بخش بازی کارت با قانون جدید ==========
     elif data.startswith("play:"):
         parts = data.split(":")
         if len(parts) != 3:
@@ -883,6 +929,7 @@ async def private_callback_handler(update: Update, context: ContextTypes.DEFAULT
                         except:
                             pass
 
+            # آپدیت کارت‌های بازیکن
             if player and player.cards:
                 cards_text = format_cards(player.cards)
                 teammate = game.get_teammate(player)
@@ -890,18 +937,19 @@ async def private_callback_handler(update: Update, context: ContextTypes.DEFAULT
                 
                 keyboard = make_cards_keyboard(game.game_id, player.cards)
                 
-                # فقط پیام جدید می‌فرستیم، پیام قبلی رو دیلیت نمی‌کنیم
                 msg = await context.bot.send_message(
                     user.id,
                     f"🎴 کارت‌های شما{teammate_text}\n\n"
-                    f"🃏 حکم: {game.trump_suit.value} {game.trump_suit.persian_name}\n"
+                    f"🃏 حکم این دست: {game.trump_suit.value} {game.trump_suit.persian_name}\n"
                     f"{cards_text}\n\n"
+                    f"🏆 امتیازات کلی: تیم ۱ {game.team0_rounds} - {game.team1_rounds} تیم ۲\n\n"
                     f"🎯 نوبت: {game.get_player(game.turn_order[game.current_turn_index]).display_name}",
                     reply_markup=keyboard
                 )
                 
                 game.player_chat_ids[user.id] = msg.message_id
 
+            # اعلام برنده دست
             if len(game.current_round.cards_played) == 0 and game.current_round.winner_id:
                 winner = game.get_player(game.current_round.winner_id)
                 if winner:
@@ -915,11 +963,11 @@ async def private_callback_handler(update: Update, context: ContextTypes.DEFAULT
                     for p in game.players:
                         await context.bot.send_message(
                             p.user_id,
-                            f"🏆 برنده این دست: {winner.display_name}\n\n"
-                            f"📊 امتیازات:\n"
+                            f"🏆 برنده این دور: {winner.display_name}\n\n"
+                            f"📊 امتیازات این دست:\n"
                             f"• {team0_names}: {team0_score}\n"
                             f"• {team1_names}: {team1_score}\n"
-                            f"🎯 اولین تیم با ۷ امتیاز = برنده بازی"
+                            f"🎯 اولین تیم با ۷ امتیاز = برنده این دست"
                         )
                         
                     if game.state == "playing":
@@ -929,13 +977,15 @@ async def private_callback_handler(update: Update, context: ContextTypes.DEFAULT
                                 if p.user_id != next_player.user_id:
                                     await context.bot.send_message(
                                         p.user_id,
-                                        f"🎯 نوبت: {next_player.display_name}"
+                                        f"🎯 نوبت بعدی: {next_player.display_name}"
                                     )
                                 else:
                                     await context.bot.send_message(
                                         next_player.user_id,
                                         f"🎯 نوبت شماست! لطفاً یک کارت بازی کنید."
                                     )
+            
+            # اعلام نوبت عادی
             else:
                 if game.state == "playing":
                     next_player = game.get_player(game.turn_order[game.current_turn_index])
@@ -952,39 +1002,39 @@ async def private_callback_handler(update: Update, context: ContextTypes.DEFAULT
                                     f"🎯 نوبت شماست! لطفاً یک کارت بازی کنید."
                                 )
 
+            # بررسی پایان بازی نهایی
             if game.state == "finished":
                 team0 = [p for p in game.players if p.team == 0]
                 team1 = [p for p in game.players if p.team == 1]
                 team0_names = " و ".join(p.display_name for p in team0)
                 team1_names = " و ".join(p.display_name for p in team1)
-                team0_score = sum(p.tricks_won for p in game.players if p.team == 0)
-                team1_score = sum(p.tricks_won for p in game.players if p.team == 1)
                 
                 for p in game.players:
-                    if game.winner_team == 0:
+                    if game.team0_rounds >= 7:
                         await context.bot.send_message(
                             p.user_id,
                             f"🏆 **بازی تمام شد!**\n\n"
-                            f"🎯 **{team0_names}** با {team0_score} امتیاز به ۷ امتیاز رسیدند!\n"
-                            f"🏅 **برنده بازی:** {team0_names}\n"
-                            f"🎉 تبریک به تیم برنده!\n\n"
+                            f"🎯 تیم {team0_names} با {game.team0_rounds} دست به ۷ دست رسیدند!\n"
+                            f"🏅 **برنده نهایی بازی:** {team0_names}\n"
+                            f"🎉 تبریک به قهرمانان!\n\n"
                             f"📊 **نتیجه نهایی:**\n"
-                            f"{team0_names}: {team0_score} امتیاز\n"
-                            f"{team1_names}: {team1_score} امتیاز"
+                            f"{team0_names}: {game.team0_rounds} دست\n"
+                            f"{team1_names}: {game.team1_rounds} دست"
                         )
-                    elif game.winner_team == 1:
+                    elif game.team1_rounds >= 7:
                         await context.bot.send_message(
                             p.user_id,
                             f"🏆 **بازی تمام شد!**\n\n"
-                            f"🎯 **{team1_names}** با {team1_score} امتیاز به ۷ امتیاز رسیدند!\n"
-                            f"🏅 **برنده بازی:** {team1_names}\n"
-                            f"🎉 تبریک به تیم برنده!\n\n"
+                            f"🎯 تیم {team1_names} با {game.team1_rounds} دست به ۷ دست رسیدند!\n"
+                            f"🏅 **برنده نهایی بازی:** {team1_names}\n"
+                            f"🎉 تبریک به قهرمانان!\n\n"
                             f"📊 **نتیجه نهایی:**\n"
-                            f"{team0_names}: {team0_score} امتیاز\n"
-                            f"{team1_names}: {team1_score} امتیاز"
+                            f"{team0_names}: {game.team0_rounds} دست\n"
+                            f"{team1_names}: {game.team1_rounds} دست"
                         )
                     game_manager.remove_user_game(p.user_id)
                 game_manager.delete_game(game.game_id)
+                
         else:
             await query.answer(f"❌ {error}", show_alert=True)
 
@@ -1022,15 +1072,15 @@ async def private_chat_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 # ==================== راه‌اندازی ====================
 def main():
     print("=" * 60)
-    print("🤖 ربات پاسور - نسخه نهایی")
+    print("🤖 ربات پاسور - نسخه نهایی با قانون مسابقات ۷ امتیازی")
     print(f"📢 کانال اجباری: {REQUIRED_CHANNEL}")
     print("✅ 52 کارت منحصر به فرد - بدون تکرار")
     print("✅ 5 کارت اول ثابت + 8 کارت بعد از حکم")
     print("✅ تیم‌بندی درست (بازیکنان روبه‌رو)")
-    print("✅ هر دست = 1 امتیاز")
-    print("✅ 7 امتیاز = برنده بازی")
+    print("✅ هر دست = 1 مسابقه ۷ امتیازی")
+    print("✅ ۷ دست = برنده نهایی بازی")
     print("✅ برنده دست = شروع کننده دست بعد")
-    print("✅ رفع مشکل هنگ کیبورد - بدون حذف پیام")
+    print("✅ رفع مشکل هنگ کیبورد")
     print("=" * 60)
 
     app = Application.builder().token(TOKEN).build()
