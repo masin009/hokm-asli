@@ -154,12 +154,10 @@ class Game:
             p.position = i
 
     def _assign_teams(self):
-        """تیم‌بندی: بازیکنان روبه‌رو هم تیم هستند"""
         for i, p in enumerate(self.players):
             p.team = i % 2
 
     def get_teammate(self, player: Player) -> Optional[Player]:
-        """یار هم‌تیمی را برمی‌گرداند"""
         if player.team is None:
             return None
         for p in self.players:
@@ -174,7 +172,6 @@ class Game:
         return None
 
     def initialize_deck(self):
-        """ایجاد ۵۲ کارت منحصر به فرد"""
         self.deck = []
         for suit in [Suit.HEARTS, Suit.DIAMONDS, Suit.CLUBS, Suit.SPADES]:
             for rank in RANKS.values():
@@ -182,7 +179,6 @@ class Game:
         random.shuffle(self.deck)
 
     def deal_first_round(self):
-        """۵ کارت اولیه - هر کارت فقط یکبار"""
         for i, p in enumerate(self.players):
             start = i * 5
             end = start + 5
@@ -192,9 +188,8 @@ class Game:
         self.first_round_dealt = True
 
     def deal_remaining_cards(self):
-        """۸ کارت باقی مانده - هر کارت فقط یکبار"""
         for i, p in enumerate(self.players):
-            start = 20 + (i * 8)  # 20 کارت اول رفت، حالا از اندیس 20 شروع کن
+            start = 20 + (i * 8)
             end = start + 8
             remaining_cards = self.deck[start:end].copy()
             p.cards = p.first_five.copy() + remaining_cards
@@ -846,6 +841,7 @@ async def private_callback_handler(update: Update, context: ContextTypes.DEFAULT
         else:
             await query.answer("❌ خطا در انتخاب حکم!", show_alert=True)
 
+    # ========== بخش اصلاح شده برای رفع مشکل هنگ کیبورد ==========
     elif data.startswith("play:"):
         parts = data.split(":")
         if len(parts) != 3:
@@ -891,17 +887,10 @@ async def private_callback_handler(update: Update, context: ContextTypes.DEFAULT
                 cards_text = format_cards(player.cards)
                 teammate = game.get_teammate(player)
                 teammate_text = f"\n🤝 یار شما: {teammate.display_name}" if teammate else ""
+                
                 keyboard = make_cards_keyboard(game.game_id, player.cards)
-
-                if user.id in game.player_chat_ids:
-                    try:
-                        await context.bot.delete_message(
-                            user.id,
-                            game.player_chat_ids[user.id]
-                        )
-                    except:
-                        pass
-
+                
+                # فقط پیام جدید می‌فرستیم، پیام قبلی رو دیلیت نمی‌کنیم
                 msg = await context.bot.send_message(
                     user.id,
                     f"🎴 کارت‌های شما{teammate_text}\n\n"
@@ -910,6 +899,7 @@ async def private_callback_handler(update: Update, context: ContextTypes.DEFAULT
                     f"🎯 نوبت: {game.get_player(game.turn_order[game.current_turn_index]).display_name}",
                     reply_markup=keyboard
                 )
+                
                 game.player_chat_ids[user.id] = msg.message_id
 
             if len(game.current_round.cards_played) == 0 and game.current_round.winner_id:
@@ -1040,6 +1030,7 @@ def main():
     print("✅ هر دست = 1 امتیاز")
     print("✅ 7 امتیاز = برنده بازی")
     print("✅ برنده دست = شروع کننده دست بعد")
+    print("✅ رفع مشکل هنگ کیبورد - بدون حذف پیام")
     print("=" * 60)
 
     app = Application.builder().token(TOKEN).build()
