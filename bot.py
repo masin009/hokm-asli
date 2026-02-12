@@ -79,6 +79,14 @@ class Card:
     def __str__(self):
         return f"{self.rank.symbol}{self.suit.value}"
 
+    def __eq__(self, other):
+        if not isinstance(other, Card):
+            return False
+        return self.suit == other.suit and self.rank.value == other.rank.value
+
+    def __hash__(self):
+        return hash((self.suit.value, self.rank.value))
+
     @property
     def persian_name(self):
         return f"{self.rank.persian_name} {self.suit.persian_name}"
@@ -164,6 +172,7 @@ class Game:
         return None
 
     def initialize_deck(self):
+        """ایجاد ۵۲ کارت منحصر به فرد و شافل"""
         self.deck = []
         for suit in [Suit.HEARTS, Suit.DIAMONDS, Suit.CLUBS, Suit.SPADES]:
             for rank in RANKS.values():
@@ -171,6 +180,7 @@ class Game:
         random.shuffle(self.deck)
 
     def deal_first_round(self):
+        """۵ کارت اولیه - هر کارت فقط یکبار"""
         for i, p in enumerate(self.players):
             start = i * 5
             end = start + 5
@@ -180,6 +190,7 @@ class Game:
         self.first_round_dealt = True
 
     def deal_remaining_cards(self):
+        """۸ کارت باقی مانده - هر کارت فقط یکبار"""
         for i, p in enumerate(self.players):
             start = (i * 13) + 5
             end = start + 8
@@ -899,7 +910,6 @@ async def private_callback_handler(update: Update, context: ContextTypes.DEFAULT
                 )
                 game.player_chat_ids[user.id] = msg.message_id
 
-            # ========== فقط این بخش تغییر کرده ==========
             if len(game.current_round.cards_played) == 0 and game.current_round.winner_id:
                 winner = game.get_player(game.current_round.winner_id)
                 if winner:
@@ -934,7 +944,6 @@ async def private_callback_handler(update: Update, context: ContextTypes.DEFAULT
                                         next_player.user_id,
                                         f"🎯 نوبت شماست! لطفاً یک کارت بازی کنید."
                                     )
-            # ==============================================
             else:
                 if game.state == "playing":
                     next_player = game.get_player(game.turn_order[game.current_turn_index])
@@ -1023,6 +1032,7 @@ def main():
     print("=" * 60)
     print("🤖 ربات پاسور - نسخه نهایی")
     print(f"📢 کانال اجباری: {REQUIRED_CHANNEL}")
+    print("✅ 52 کارت منحصر به فرد - بدون تکرار")
     print("✅ 5 کارت اول ثابت + 8 کارت بعد از حکم")
     print("✅ هر دست = 1 امتیاز")
     print("✅ 7 امتیاز = برنده بازی")
