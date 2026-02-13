@@ -438,6 +438,7 @@ class GameManager:
         return game
 
     def get_game(self, game_id: str) -> Optional[Game]:
+        """دریافت بازی با game_id - بازی تا وقتی تمام نشده یا بسته نشده وجود دارد"""
         return self.games.get(game_id)
 
     def get_user_game(self, user_id: int) -> Optional[Game]:
@@ -530,7 +531,10 @@ async def private_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         game_id = args[0][5:]
         game = game_manager.get_game(game_id)
         if not game:
-            await update.message.reply_text("❌ این بازی وجود ندارد یا قبلاً حذف شده است.")
+            await update.message.reply_text(
+                "❌ این بازی وجود ندارد یا قبلاً به اتمام رسیده است.\n"
+                "لطفاً از سازنده بازی بخواهید یک بازی جدید ایجاد کند."
+            )
             return
 
         if any(p.user_id == user.id for p in game.players):
@@ -633,8 +637,9 @@ async def newgame_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"✅ بازی جدید ایجاد شد!\n"
         f"🔢 کد بازی: {game.game_id[-6:]}\n\n"
-        f"🔗 لینک دعوت:\n{invite_link}\n\n"
+        f"🔗 **لینک دعوت (تا پایان بازی معتبر است):**\n{invite_link}\n\n"
         f"📌 این لینک را برای دوستان خود بفرستید.\n"
+        f"⚠️ توجه: لینک تا زمانی که بازی تمام نشده یا بسته نشده معتبر است.\n"
         f"بعد از پیوستن ۴ نفر، با /startgame بازی را شروع کنید.",
         disable_web_page_preview=True
     )
@@ -761,7 +766,10 @@ async def private_callback_handler(update: Update, context: ContextTypes.DEFAULT
         game_id = data[7:]
         game = game_manager.get_game(game_id)
         if not game:
-            await query.edit_message_text("❌ بازی یافت نشد.")
+            await query.edit_message_text(
+                "❌ این بازی وجود ندارد یا قبلاً به اتمام رسیده است.\n"
+                "لطفاً از سازنده بازی بخواهید یک بازی جدید ایجاد کند."
+            )
             return
 
         full_name = None
@@ -884,7 +892,7 @@ async def private_callback_handler(update: Update, context: ContextTypes.DEFAULT
         else:
             await query.answer("❌ خطا در انتخاب حکم!", show_alert=True)
 
-    # ========== بخش بازی کارت با قانون جدید ==========
+    # ========== بخش بازی کارت ==========
     elif data.startswith("play:"):
         parts = data.split(":")
         if len(parts) != 3:
@@ -946,7 +954,7 @@ async def private_callback_handler(update: Update, context: ContextTypes.DEFAULT
                 
                 game.player_chat_ids[user.id] = msg.message_id
 
-            # اعلام برنده دست
+            # اعلام برنده دور
             if len(game.current_round.cards_played) == 0 and game.current_round.winner_id:
                 winner = game.get_player(game.current_round.winner_id)
                 if winner:
@@ -999,7 +1007,7 @@ async def private_callback_handler(update: Update, context: ContextTypes.DEFAULT
                                     f"🎯 نوبت شماست! لطفاً یک کارت بازی کنید."
                                 )
             
-            # ===== بخش جدید: اعلام برنده دست و شروع دست بعد =====
+            # اعلام برنده دست و شروع دست بعد
             if game.state == "hand_finished":
                 team0 = [p for p in game.players if p.team == 0]
                 team1 = [p for p in game.players if p.team == 1]
@@ -1170,6 +1178,7 @@ def main():
     print("✅ ۷ دست = برنده نهایی بازی")
     print("✅ برنده دست = شروع کننده دست بعد")
     print("✅ اعلام برنده دست و شروع خودکار دست بعد")
+    print("✅ لینک دعوت تا پایان بازی معتبر")
     print("=" * 60)
 
     app = Application.builder().token(TOKEN).build()
